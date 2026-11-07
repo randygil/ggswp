@@ -19,6 +19,9 @@ $conf = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
 $version = $conf.version
 $tag = "v$version"
 $repo = "randygil/ggswp"
+# Siempre con la cuenta dueña del repositorio, aunque gh tenga otra cuenta activa.
+$env:GH_TOKEN = (gh auth token --hostname github.com --user randygil)
+if (-not $env:GH_TOKEN) { throw "gh no tiene la cuenta randygil (gh auth login)" }
 
 $keyPath = Join-Path $env:USERPROFILE ".tauri\ggswp.key"
 if (-not (Test-Path $keyPath)) { throw "No está la clave de firma en $keyPath" }
