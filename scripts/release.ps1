@@ -18,7 +18,7 @@ Set-Location $root
 $conf = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
 $version = $conf.version
 $tag = "v$version"
-$repo = "artesanalintelligence/ggswp"
+$repo = "randygil/ggswp"
 
 $keyPath = Join-Path $env:USERPROFILE ".tauri\ggswp.key"
 if (-not (Test-Path $keyPath)) { throw "No está la clave de firma en $keyPath" }

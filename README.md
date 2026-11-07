@@ -6,7 +6,7 @@ línea de tiempo, genera clips y te deja editarlos, enviarlos al teléfono o sub
 
 Una sola app de escritorio (Tauri + React), sin OBS: la captura va integrada.
 
-**Descarga:** el instalador está en [Releases](https://github.com/artesanalintelligence/ggswp/releases).
+**Descarga:** el instalador está en [Releases](https://github.com/randygil/ggswp/releases).
 Una vez instalada, la app avisa sola cuando hay una versión nueva.
 
 ## Qué hace
