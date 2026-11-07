@@ -32,7 +32,7 @@ export function Sidebar(props: {
   const { route, onNavigate, status, settings, uploads, counts } = props;
   const rec = status?.recording;
   const active = (name: string) => route.name === name || (name === "gallery" && route.name === "match");
-  const nav = (name: "gallery" | "clips" | "settings", label: string, icon: string, count?: number) => (
+  const nav = (name: "gallery" | "clips" | "stats" | "settings", label: string, icon: string, count?: number) => (
     <button className={`nav-item ${active(name) ? "active" : ""}`} aria-current={active(name) ? "page" : undefined} onClick={() => onNavigate({ name })}>
       <Icon name={icon} />
       <span>{label}</span>
@@ -54,6 +54,7 @@ export function Sidebar(props: {
       <nav className="nav" aria-label="Secciones">
         {nav("gallery", "Partidas", "film", counts.matches)}
         {nav("clips", "Clips", "scissors", counts.clips)}
+        {nav("stats", "Estadísticas", "chart")}
         {nav("settings", "Ajustes", "sliders")}
       </nav>
 
@@ -144,7 +145,7 @@ export function Sidebar(props: {
                 <span>
                   {u.waiting
                     ? "Drive en pausa mientras juegas"
-                    : `${u.download ? "Bajando de Drive" : "Subiendo a Drive"} · ${Math.round((u.sent / Math.max(1, u.total)) * 100)} %`}
+                    : `${u.compressing ? "Comprimiendo para Drive" : u.download ? "Bajando de Drive" : "Subiendo a Drive"} · ${Math.round((u.sent / Math.max(1, u.total)) * 100)} %`}
                 </span>
                 <div className="meter">
                   <div style={{ width: `${u.total ? (u.sent / u.total) * 100 : 0}%` }} />

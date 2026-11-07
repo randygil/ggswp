@@ -13,6 +13,7 @@ import {
   fmtSize,
   fmtTime,
   longestShot,
+  onTimeline,
   pad2,
   totalSize,
   type Clip,
@@ -27,6 +28,7 @@ import { ShareDialog } from "../components/ShareDialog";
 import { Signature } from "../components/Signature";
 import { StepProgress } from "../components/StepProgress";
 import { useToast } from "../components/Toast";
+import { fmtNum, hasPlacement } from "../matchStats";
 
 type Filter = "all" | "wins" | "kept";
 type Sort = "recent" | "kills" | "long";
@@ -216,10 +218,20 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
               <dt>Eliminaciones</dt>
               <dd>{pad2(m.kills)}</dd>
             </div>
-            <div className="stat">
-              <dt>Duración</dt>
-              <dd>{fmtClock(m.duration_s)}</dd>
-            </div>
+            {hasPlacement(m) ? (
+              <div className="stat">
+                <dt>Puesto</dt>
+                <dd className={m.placement === 1 ? "accent" : ""}>
+                  #{m.placement}
+                  {m.total_players != null && <small> / {m.total_players}</small>}
+                </dd>
+              </div>
+            ) : (
+              <div className="stat">
+                <dt>Duración</dt>
+                <dd>{fmtClock(m.duration_s)}</dd>
+              </div>
+            )}
             <div className="stat">
               <dt>Disparo más largo</dt>
               <dd>
@@ -292,7 +304,7 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
             )}
             <span style={{ marginLeft: "auto" }}>{fmtClock(m.duration_s)}</span>
           </div>
-          <Signature variant="full" events={m.events} clips={m.clips.filter((c) => c.end <= m.duration_s + 1)} duration={m.duration_s} />
+          <Signature variant="full" events={m.events} clips={m.clips.filter((c) => onTimeline(c) && c.end <= m.duration_s + 1)} duration={m.duration_s} />
         </figure>
       )}
     </section>
@@ -301,21 +313,27 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
 
 /** Totales de todas las partidas: siguen sumando aunque las partidas venzan. */
 function TotalsStrip({ t }: { t: Totals }) {
-  const items: [string, string, boolean][] = [
+  // Con puesto, el número de partidas pasa a la etiqueta para no pasar de seis datos.
+  const placed = t.avg_placement != null && !!t.placed_matches;
+  const items: [string, string, boolean, string?][] = [
     [String(t.chests), t.chests === 1 ? "cofre" : "cofres", true],
     [String(t.kills), t.kills === 1 ? "eliminación" : "eliminaciones", false],
     [String(t.victories), t.victories === 1 ? "victoria" : "victorias", false],
-    [String(t.matches), t.matches === 1 ? "partida" : "partidas", false],
-    [fmtPlayed(t.seconds), "jugado", false],
   ];
+  if (placed) items.push([`#${Math.round(t.avg_placement!)}`, "puesto prom.", false, `Mejor puesto: #${t.best_placement} · promedio de ${t.placed_matches} partidas con puesto`]);
+  else items.push([String(t.matches), t.matches === 1 ? "partida" : "partidas", false]);
+  if (t.damage_dealt) items.push([fmtNum(t.damage_dealt), "de daño", false]);
+  items.push([fmtPlayed(t.seconds), "jugado", false]);
   return (
     <section className="totals" aria-label="Totales de todas tus partidas">
       <span className="label" title="Siguen sumando aunque las partidas venzan o se borren">
-        Histórico{t.since && ` · desde ${new Date(t.since).toLocaleDateString("es", { day: "numeric", month: "short" })}`}
+        Histórico
+        {placed && ` · ${t.matches} ${t.matches === 1 ? "partida" : "partidas"}`}
+        {t.since && ` · desde ${new Date(t.since).toLocaleDateString("es", { day: "numeric", month: "short" })}`}
       </span>
       <dl>
-        {items.map(([v, label, accent]) => (
-          <div key={label}>
+        {items.map(([v, label, accent, title]) => (
+          <div key={label} title={title}>
             <dd className={accent ? "accent" : ""}>{v}</dd>
             <dt>{label}</dt>
           </div>
@@ -379,6 +397,12 @@ function MatchCard({ m, step, retentionDays, onOpen }: { m: Match; step?: Step; 
             {left !== null && left > 2 && ` · ${expiryText(left).toLocaleLowerCase("es")}`}
           </span>
         </div>
+        {hasPlacement(m) && (
+          <div className="card-kills card-place" title={m.total_players ? `Puesto ${m.placement} de ${m.total_players}` : `Puesto ${m.placement}`}>
+            <b className={m.placement === 1 ? "accent" : ""}>#{m.placement}</b>
+            <span>{m.total_players ? `DE ${m.total_players}` : "PUESTO"}</span>
+          </div>
+        )}
         <div className="card-kills">
           <b>{pad2(m.kills)}</b>
           <span>ELIM</span>
@@ -411,7 +435,8 @@ export function ClipCard({ m, c, onOpen }: { m: Match; c: Clip; onOpen: () => vo
       </div>
       <span className="card-big">{c.title}</span>
       <span className="card-meta">
-        {m.title} · {fmtClock(c.start)}
+        {m.title}
+        {c.kind !== "reel" && ` · ${fmtClock(c.start)}`}
       </span>
     </button>
   );

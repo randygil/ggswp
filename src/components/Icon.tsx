@@ -38,6 +38,7 @@ const PATHS: Record<string, string> = {
   next: "M9 18l6-6-6-6",
   arrowLeft: "M12 19l-7-7 7-7M19 12H5",
   keep: "M6 3h12v18l-6-4.5L6 21z",
+  chart: "M4 20h16M7 16v-4M12 16V6M17 16v-7",
 };
 
 export function Icon({ name, size = 18, filled = false }: { name: string; size?: number; filled?: boolean }) {

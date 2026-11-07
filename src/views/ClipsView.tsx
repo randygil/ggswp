@@ -3,7 +3,7 @@ import { clipTag, pad2, type Match } from "../api";
 import { Icon } from "../components/Icon";
 import { ClipCard } from "./Gallery";
 
-type Filter = "all" | "Auto" | "Atajo" | "Editor";
+type Filter = "all" | "Auto" | "Atajo" | "Editor" | "Resumen" | "Vertical";
 
 export function ClipsView({ matches, onOpen }: { matches: Match[]; onOpen: (id: string, clipId: string) => void }) {
   const [filter, setFilter] = useState<Filter>("all");
@@ -21,6 +21,8 @@ export function ClipsView({ matches, onOpen }: { matches: Match[]; onOpen: (id: 
     ["Auto", "Automáticos"],
     ["Atajo", "Con atajo"],
     ["Editor", "Del editor"],
+    ["Resumen", "Resúmenes"],
+    ["Vertical", "Verticales"],
   ];
 
   return (

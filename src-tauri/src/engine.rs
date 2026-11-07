@@ -681,6 +681,7 @@ pub fn analyze(
     meta.knocks = sum.knocks;
     meta.died = sum.died || kept.iter().any(|e| e.kind == "death");
     meta.victory = sum.victory || kept.iter().any(|e| e.kind == "victory");
+    meta.apply_stats(rep.and_then(|r| r.stats.as_ref()));
     meta.events = sum.events;
     meta.events.extend(kept);
     meta.chests = 0;
@@ -720,7 +721,11 @@ pub fn analyze(
             .find(|c| c.id == cid && (c.start - start).abs() < 0.05 && (c.end - end).abs() < 0.05 && (c.offloaded || lib.file(&id, &c.file).exists()))
             .cloned()
     };
-    meta.clips = previous.iter().filter(|c| c.kind == "manual" || (c.kind == "hotkey" && ctx.clip_requests.is_empty())).cloned().collect();
+    meta.clips = previous
+        .iter()
+        .filter(|c| matches!(c.kind.as_str(), "manual" | "reel" | "vertical") || (c.kind == "hotkey" && ctx.clip_requests.is_empty()))
+        .cloned()
+        .collect();
     let clips_dir = lib.file(&meta.id, "clips");
     for (i, at) in ctx.clip_requests.iter().enumerate() {
         let end = (secs_between(video_start, *at)).min(meta.duration_s);

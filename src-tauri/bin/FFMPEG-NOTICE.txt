@@ -1,0 +1,15 @@
+ffmpeg.exe incluido con ggswp
+=============================
+
+Este instalador incluye una copia sin modificar de FFmpeg, que ggswp ejecuta como programa
+aparte (no se enlaza con ggswp).
+
+- Versión: N-116328-gfa5a605542-20240718
+- Compilación: FFmpeg-Builds de BtbN (win64, GPL)
+  https://github.com/BtbN/FFmpeg-Builds
+- Código fuente de esa versión:
+  https://github.com/FFmpeg/FFmpeg/tree/fa5a605542
+- Licencia: GNU General Public License versión 3 (GPLv3)
+  https://www.gnu.org/licenses/gpl-3.0.html
+
+FFmpeg es una marca registrada de Fabrice Bellard, creador del proyecto FFmpeg.

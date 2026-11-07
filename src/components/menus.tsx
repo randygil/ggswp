@@ -41,6 +41,12 @@ export function matchMenuItems(
     },
     { label: "Renombrar…", icon: "edit", onSelect: a.rename },
     { label: "Compartir…", icon: "upload", onSelect: a.share, disabled: !ready },
+    {
+      label: m.clips.some((c) => c.kind === "reel") ? "Rehacer resumen" : "Crear resumen",
+      icon: "film",
+      disabled: !ready || m.offloaded,
+      onSelect: () => a.run("Resumen listo", () => api.createReel(m.id)),
+    },
     m.drive
       ? { label: "Abrir en Drive", icon: "cloud", onSelect: () => a.run("", () => api.driveOpen(m.id)) }
       : { label: "Subir a Drive", icon: "cloud", disabled: !ready || a.busy, onSelect: () => a.run("Subida a Drive completa", () => api.driveUpload(m.id)) },
@@ -72,10 +78,28 @@ export function matchMenuItems(
   ];
 }
 
-export function clipMenuItems(m: Match, c: Clip, a: { play: () => void; share: () => void; run: Run; busy?: boolean }): MenuEntry[] {
+/** Crea la versión vertical de un clip; `onCreated` recibe el clip nuevo. */
+export function makeVertical(m: Match, c: Clip, run: Run, onCreated?: (v: Clip) => void) {
+  return run("Versión vertical lista", async () => {
+    const v = await api.createVertical(m.id, c.id);
+    onCreated?.(v);
+  });
+}
+
+export function clipMenuItems(
+  m: Match,
+  c: Clip,
+  a: { play: () => void; share: () => void; run: Run; busy?: boolean; onCreated?: (v: Clip) => void },
+): MenuEntry[] {
   return [
     { label: "Reproducir", icon: "play", onSelect: a.play },
     { label: "Compartir…", icon: "upload", onSelect: a.share },
+    c.kind !== "vertical" && {
+      label: "Versión vertical",
+      icon: "phone",
+      disabled: !!c.offloaded || m.status !== "ready",
+      onSelect: () => makeVertical(m, c, a.run, a.onCreated),
+    },
     c.drive
       ? { label: "Abrir en Drive", icon: "cloud", onSelect: () => a.run("", () => api.driveOpen(m.id, c.id)) }
       : { label: "Subir a Drive", icon: "cloud", disabled: a.busy, onSelect: () => a.run("Clip subido a Drive", () => api.driveUpload(m.id, c.id)) },

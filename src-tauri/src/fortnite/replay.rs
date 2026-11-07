@@ -40,12 +40,33 @@ pub struct Elimination {
     pub distance_m: Option<f64>,
 }
 
+/// Resumen de fin de partida (`AthenaMatchStats` + `AthenaMatchTeamStats`). Fortnite lo
+/// escribe cuando termina la partida del jugador: si salió antes, no está.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct MatchStats {
+    pub placement: Option<u32>,
+    pub total_players: Option<u32>,
+    /// 0–1.
+    pub accuracy: Option<f32>,
+    pub assists: Option<u32>,
+    pub eliminations: Option<u32>,
+    /// Daño con armas + otro daño.
+    pub damage_dealt: Option<u32>,
+    pub damage_taken: Option<u32>,
+    pub damage_to_structures: Option<u32>,
+    pub revives: Option<u32>,
+    pub materials_gathered: Option<u32>,
+    pub materials_used: Option<u32>,
+    pub distance_m: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Replay {
     pub path: PathBuf,
     pub started_at: DateTime<Utc>,
     pub length_ms: u32,
     pub eliminations: Vec<Elimination>,
+    pub stats: Option<MatchStats>,
 }
 
 struct Reader<'a> {
@@ -186,6 +207,11 @@ pub fn parse_bytes(bytes: &[u8], path: &Path) -> Result<Replay> {
     let mut r = Reader { b: bytes, p: 0 };
     let header = read_header(&mut r)?;
     let mut eliminations = Vec::new();
+    let mut stats: Option<MatchStats> = None;
+    let open = |raw: &[u8]| match &header.key {
+        Some(k) => decrypt(k, raw),
+        None => Ok(raw.to_vec()),
+    };
 
     while r.p + 8 <= bytes.len() {
         let chunk_type = r.u32()?;
@@ -201,19 +227,23 @@ pub fn parse_bytes(bytes: &[u8], path: &Path) -> Result<Replay> {
             let mut c = Reader { b: &bytes[..end], p: r.p };
             let _id = c.fstring()?;
             let group = c.fstring()?;
-            let _meta = c.fstring()?;
+            let meta = c.fstring()?;
             let t1 = c.u32()?;
             let _t2 = c.u32()?;
             let dsize = c.i32()?.max(0) as usize;
             if group == "playerElim" {
-                let raw = c.take(dsize)?;
-                let data = match &header.key {
-                    Some(k) => decrypt(k, raw)?,
-                    None => raw.to_vec(),
-                };
+                let data = open(c.take(dsize)?)?;
                 match parse_elim(&data, t1) {
                     Ok(e) => eliminations.push(e),
                     Err(err) => log::debug!("playerElim ilegible en {t1} ms: {err:#}"),
+                }
+            } else if meta == "AthenaMatchStats" || meta == "AthenaMatchTeamStats" {
+                let parsed = open(c.take(dsize)?).and_then(|data| {
+                    let s = stats.get_or_insert_with(MatchStats::default);
+                    if meta == "AthenaMatchStats" { parse_match_stats(&data, s) } else { parse_team_stats(&data, s) }
+                });
+                if let Err(err) = parsed {
+                    log::debug!("{meta} ilegible: {err:#}");
                 }
             }
         }
@@ -225,7 +255,41 @@ pub fn parse_bytes(bytes: &[u8], path: &Path) -> Result<Replay> {
         started_at: resolve_start(header.started_naive, path),
         length_ms: header.length_ms,
         eliminations,
+        stats,
     })
+}
+
+/// `AthenaMatchStats`: u32 versión, f32 precisión, y en u32: asistencias, eliminaciones,
+/// daño con armas, otro daño, reanimaciones, daño recibido, daño a estructuras, materiales
+/// recolectados, materiales usados, distancia recorrida (en cm).
+fn parse_match_stats(data: &[u8], s: &mut MatchStats) -> Result<()> {
+    let mut r = Reader { b: data, p: 0 };
+    let _version = r.u32()?;
+    let accuracy = f32::from_le_bytes(r.take(4)?.try_into()?);
+    s.accuracy = (accuracy.is_finite() && (0.0..=1.0).contains(&accuracy)).then_some(accuracy);
+    s.assists = Some(r.u32()?);
+    s.eliminations = Some(r.u32()?);
+    let weapon = r.u32()?;
+    let other = r.u32()?;
+    s.damage_dealt = Some(weapon.saturating_add(other));
+    s.revives = Some(r.u32()?);
+    s.damage_taken = Some(r.u32()?);
+    s.damage_to_structures = Some(r.u32()?);
+    s.materials_gathered = Some(r.u32()?);
+    s.materials_used = Some(r.u32()?);
+    s.distance_m = Some(r.u32()? as f64 / 100.0);
+    Ok(())
+}
+
+/// `AthenaMatchTeamStats`: u32 (0), u32 puesto, u32 total de jugadores.
+fn parse_team_stats(data: &[u8], s: &mut MatchStats) -> Result<()> {
+    let mut r = Reader { b: data, p: 0 };
+    let _version = r.u32()?;
+    let placement = r.u32()?;
+    let total = r.u32()?;
+    s.placement = (placement > 0).then_some(placement);
+    s.total_players = (total > 0).then_some(total);
+    Ok(())
 }
 
 fn read_player(r: &mut Reader) -> Result<PlayerRef> {
@@ -325,5 +389,11 @@ mod tests {
             println!("{:>8} {:?} -> {:?} knocked={} gun={} dist={:?}", e.time_ms, e.eliminator, e.eliminated, e.knocked, e.gun_type, e.distance_m.map(|d| d.round()));
         }
         assert!(!rep.eliminations.is_empty());
+        for p in files.iter().rev().take(8) {
+            match parse_file(p) {
+                Ok(r) => println!("{} len={}s stats={:?}", p.file_name().unwrap().to_string_lossy(), r.length_ms / 1000, r.stats),
+                Err(e) => println!("{}: {e:#}", p.display()),
+            }
+        }
     }
 }

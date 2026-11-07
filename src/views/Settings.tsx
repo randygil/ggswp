@@ -298,11 +298,22 @@ export function SettingsView() {
                 <Row label="Subir clips">
                   <Toggle value={s.drive.upload_clips} onChange={(v) => setDrive("upload_clips", v)} />
                 </Row>
-                <Row label="Subir la partida completa" hint="Archivos de varios GB">
+                <Row label="Subir la partida completa" hint="Con compresión, unos 130 MB por minuto de partida">
                   <Toggle value={s.drive.upload_full_match} onChange={(v) => setDrive("upload_full_match", v)} />
                 </Row>
               </>
             )}
+            <Row
+              label="Formato de la copia en Drive"
+              hint="Se recodifica con la tarjeta gráfica antes de subir: casi igual a la vista y unas 4 veces más liviano. La copia de la PC no cambia."
+            >
+              <select value={s.drive.codec} onChange={(e) => setDrive("codec", e.target.value)}>
+                <option value="hevc">HEVC (recomendado)</option>
+                <option value="av1">AV1 (el más liviano)</option>
+                <option value="h264">H.264 (compatible con todo)</option>
+                <option value="original">Original, sin comprimir</option>
+              </select>
+            </Row>
 
           </>
         ) : (

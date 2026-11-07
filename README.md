@@ -6,6 +6,25 @@ línea de tiempo, genera clips y te deja editarlos, enviarlos al teléfono o sub
 
 Una sola app de escritorio (Tauri + React), sin OBS: la captura va integrada.
 
+**Descarga:** el instalador está en [Releases](https://github.com/artesanalintelligence/ggswp/releases).
+Una vez instalada, la app avisa sola cuando hay una versión nueva.
+
+## Qué hace
+
+- **Graba sola** cada partida de Fortnite y la guarda en la galería, con el mapa de la partida como
+  una "firma" de eventos.
+- **Eliminaciones, derribos, caída y victoria** exactos desde el replay de Fortnite.
+- **Cofres abiertos**: lee los avisos de experiencia ("+600 PE · COFRE") en el video con el OCR de Windows.
+- **Estadísticas**: puesto final, daño hecho y recibido, precisión, distancia; un histórico que no
+  baja cuando las partidas vencen y una página con gráficos partida a partida.
+- **Clips automáticos** de cada eliminación, clips con atajo (últimos 30 s) y editor con línea de tiempo.
+- **Resumen de la partida** en un solo video y **versión vertical 9:16** (TikTok / Shorts / Reels)
+  con tu contador de eliminaciones.
+- **Google Drive**: sube solo cuando no estás jugando, con una copia comprimida (HEVC con NVENC,
+  unas 4 veces más liviana). Lo que ya está en Drive se borra de la PC a los 7 días y del todo a
+  los 15 (las partidas conservadas no vencen). Todo es configurable.
+- **Al teléfono** por Wi-Fi o Drive con un QR, menú de highlights sobre el juego y menús de clic derecho.
+
 ## Cómo funciona
 
 | Pieza | Técnica |
@@ -68,7 +87,7 @@ clips automáticamente al terminar.
 ## Dónde se guarda todo
 
 - Grabaciones: `%USERPROFILE%\Videos\ggswp\<fecha>\` (`match.mp4`, `meta.json`, `thumb.jpg`, `clips\`).
-- Ajustes: `%APPDATA%\com.ggswp.app\settings.json`.
+- Ajustes: `%APPDATA%\com.ggswp.app\settings.json` (y el histórico en `stats.json`).
 - Búfer temporal: `%LOCALAPPDATA%\com.ggswp.app\buffer\` (se borra solo).
 
 ## Desarrollo
@@ -104,8 +123,26 @@ src-tauri/src/
   hotkeys.rs          atajos globales
   share.rs            servidor Wi-Fi + QR
   gdrive.rs uploads.rs  Google Drive
-src/                  interfaz React (galería, clips, editor, ajustes, overlay)
+  fortnite/chests.rs  cofres abiertos (OCR de los avisos de PE)
+  montage.rs          resumen de la partida y versión vertical
+  retention.rs        vencimiento (PC y Drive)
+  stats.rs            histórico de estadísticas
+src/                  interfaz React (galería, clips, editor, estadísticas, ajustes, overlay)
+scripts/release.ps1   publica una versión en GitHub Releases (con firma para el actualizador)
 ```
+
+### Publicar una versión
+
+1. Sube la versión en `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` y `package.json`, y haz commit.
+2. `powershell -File scripts/release.ps1 -Notes "Qué cambió"`
+
+El script compila, firma el instalador con la clave de `%USERPROFILE%\.tauri\ggswp.key` (nunca va
+al repositorio), genera `latest.json` y crea la release. Las copias instaladas la descargan solas.
+
+## Licencias de terceros
+
+El instalador incluye `ffmpeg.exe` (FFmpeg, GPLv3), que ggswp ejecuta como programa aparte. Ver
+[`src-tauri/bin/FFMPEG-NOTICE.txt`](src-tauri/bin/FFMPEG-NOTICE.txt) para la versión y el código fuente.
 
 ## Limitaciones conocidas
 

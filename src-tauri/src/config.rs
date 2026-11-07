@@ -34,6 +34,13 @@ pub struct DriveSettings {
     /// Borra la copia local apenas el archivo queda verificado en Drive (si no, se usa
     /// `Settings::local_days`).
     pub delete_local_after_upload: bool,
+    /// Formato de la copia que se sube: "hevc" | "av1" | "h264" | "original".
+    #[serde(default = "default_drive_codec")]
+    pub codec: String,
+}
+
+fn default_drive_codec() -> String {
+    "hevc".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,7 +130,7 @@ impl Default for Settings {
             launch_at_startup: false,
             start_minimized: false,
             close_to_tray: true,
-            drive: DriveSettings { upload_clips: true, ..Default::default() },
+            drive: DriveSettings { upload_clips: true, codec: default_drive_codec(), ..Default::default() },
             hotkeys: Hotkeys::default(),
             clip_seconds: 30,
             replay_buffer: true,

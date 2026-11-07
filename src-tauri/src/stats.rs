@@ -15,15 +15,22 @@ use crate::library::{Library, MatchMeta, MatchStatus};
 
 static LOCK: Mutex<()> = Mutex::new(());
 
+/// 1: con el resumen de fin de partida (puesto, daño, distancia).
+const VERSION: u8 = 1;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Contribution {
+    pub version: u8,
     pub at: DateTime<Utc>,
     pub kills: u32,
     pub knocks: u32,
     pub chests: u32,
     pub victory: bool,
     pub seconds: f64,
+    pub placement: Option<u32>,
+    pub damage_dealt: Option<u32>,
+    pub distance_m: Option<f64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -40,6 +47,12 @@ pub struct Totals {
     pub chests: u32,
     pub victories: u32,
     pub seconds: f64,
+    pub damage_dealt: u64,
+    pub distance_m: f64,
+    /// Mejor puesto y promedio, solo entre las partidas que tienen puesto.
+    pub best_placement: Option<u32>,
+    pub avg_placement: Option<f64>,
+    pub placed_matches: u32,
     /// Primera partida contada.
     pub since: Option<DateTime<Utc>>,
 }
@@ -69,7 +82,18 @@ fn counts(m: &MatchMeta) -> bool {
 }
 
 fn contribution(m: &MatchMeta) -> Contribution {
-    Contribution { at: m.created_at, kills: m.kills, knocks: m.knocks, chests: m.chests, victory: m.victory, seconds: m.duration_s }
+    Contribution {
+        version: VERSION,
+        at: m.created_at,
+        kills: m.kills,
+        knocks: m.knocks,
+        chests: m.chests,
+        victory: m.victory,
+        seconds: m.duration_s,
+        placement: m.placement,
+        damage_dealt: m.damage_dealt,
+        distance_m: m.distance_m,
+    }
 }
 
 /// Registra (o actualiza) el aporte de una partida recién analizada.
@@ -88,21 +112,38 @@ pub fn record(path: &Path, m: &MatchMeta) -> Result<()> {
 }
 
 /// Suma las partidas de la biblioteca que todavía no estaban contadas (la primera vez,
-/// las que ya existían antes de esta función).
+/// las que ya existían antes de esta función). Las contadas con una versión anterior se
+/// completan una sola vez con el resumen de fin de partida, si su replay todavía existe.
 pub fn seed(path: &Path, lib: &Library) -> Result<()> {
     let _g = LOCK.lock().unwrap();
     let mut store = load(path);
     let mut changed = false;
-    for m in lib.list().iter().filter(|m| counts(m)) {
-        if !store.matches.contains_key(&m.id) {
-            store.matches.insert(m.id.clone(), contribution(m));
-            changed = true;
+    for mut m in lib.list().into_iter().filter(counts) {
+        if store.matches.get(&m.id).is_some_and(|c| c.version >= VERSION) {
+            continue;
         }
+        backfill(lib, &mut m);
+        store.matches.insert(m.id.clone(), contribution(&m));
+        changed = true;
     }
     if changed {
         save(path, &store)?;
     }
     Ok(())
+}
+
+/// Lee el resumen de fin de partida de una partida analizada antes de que existiera.
+fn backfill(lib: &Library, m: &mut MatchMeta) {
+    if m.placement.is_some() || m.accuracy.is_some() {
+        return;
+    }
+    let stats = m.replay.as_deref().map(Path::new).filter(|p| p.exists()).and_then(|p| crate::fortnite::replay::parse_file(p).ok()).and_then(|r| r.stats);
+    m.apply_stats(stats.as_ref());
+    if m.placement.is_some() || m.accuracy.is_some() {
+        if let Err(e) = lib.save(m) {
+            log::warn!("{}: no se pudo guardar el resumen de la partida: {e:#}", m.id);
+        }
+    }
 }
 
 pub fn totals(path: &Path) -> Totals {
@@ -112,6 +153,7 @@ pub fn totals(path: &Path) -> Totals {
 
 fn sum(store: &Store) -> Totals {
     let mut t = Totals::default();
+    let mut placement_sum = 0u64;
     for c in store.matches.values() {
         t.matches += 1;
         t.kills += c.kills;
@@ -119,7 +161,17 @@ fn sum(store: &Store) -> Totals {
         t.chests += c.chests;
         t.victories += c.victory as u32;
         t.seconds += c.seconds;
+        t.damage_dealt += c.damage_dealt.unwrap_or(0) as u64;
+        t.distance_m += c.distance_m.unwrap_or(0.0);
+        if let Some(p) = c.placement {
+            t.placed_matches += 1;
+            placement_sum += p as u64;
+            t.best_placement = Some(t.best_placement.map_or(p, |b| b.min(p)));
+        }
         t.since = Some(t.since.map_or(c.at, |s| s.min(c.at)));
+    }
+    if t.placed_matches > 0 {
+        t.avg_placement = Some(placement_sum as f64 / t.placed_matches as f64);
     }
     t
 }
@@ -153,6 +205,17 @@ mod tests {
         // seed con una biblioteca vacía no quita nada.
         seed(&path, &Library::new(dir.join("vacia"))).unwrap();
         assert_eq!(totals(&path).chests, 8);
+
+        // Puesto, daño y distancia: el puesto se promedia solo entre las partidas que lo tienen.
+        let t = totals(&path);
+        assert_eq!((t.best_placement, t.avg_placement, t.placed_matches, t.damage_dealt), (None, None, 0, 0));
+        record(&path, &MatchMeta { placement: Some(10), damage_dealt: Some(300), distance_m: Some(500.0), ..meta("a", 1, 5) }).unwrap();
+        record(&path, &MatchMeta { placement: Some(1), victory: true, damage_dealt: Some(700), distance_m: Some(1500.5), ..meta("c", 4, 2) }).unwrap();
+        let t = totals(&path);
+        assert_eq!((t.matches, t.victories, t.best_placement, t.placed_matches), (3, 1, Some(1), 2));
+        assert_eq!(t.avg_placement, Some(5.5));
+        assert_eq!(t.damage_dealt, 1000);
+        assert!((t.distance_m - 2000.5).abs() < 1e-9);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

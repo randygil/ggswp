@@ -2,6 +2,17 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Permisos de la ventana principal",
-  "windows": ["main", "overlay"],
-  "permissions": ["core:default", "dialog:default", "opener:default", "autostart:default", "global-shortcut:default"]
+  "windows": [
+    "main",
+    "overlay"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "opener:default",
+    "autostart:default",
+    "global-shortcut:default",
+    "updater:default",
+    "process:allow-restart"
+  ]
 }

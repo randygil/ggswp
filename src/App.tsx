@@ -5,11 +5,13 @@ import { Gallery } from "./views/Gallery";
 import { ClipsView } from "./views/ClipsView";
 import { MatchView } from "./views/MatchView";
 import { SettingsView } from "./views/Settings";
+import { StatsView } from "./views/StatsView";
 import { Sidebar } from "./components/Sidebar";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { ToastProvider, useToast } from "./components/Toast";
 import { ContextMenuProvider, useContextMenu } from "./components/ContextMenu";
 
-export type Route = { name: "gallery" } | { name: "clips" } | { name: "settings" } | { name: "match"; id: string; clipId?: string };
+export type Route = { name: "gallery" } | { name: "clips" } | { name: "stats" } | { name: "settings" } | { name: "match"; id: string; clipId?: string };
 
 function Shell() {
   const [route, setRoute] = useState<Route>({ name: "gallery" });
@@ -69,6 +71,7 @@ function Shell() {
 
   return (
     <div className="app">
+      <UpdateBanner busy={!!status?.recording || (status?.processing.length ?? 0) > 0} />
       <Sidebar route={route} onNavigate={setRoute} status={status} settings={settings} uploads={uploads} counts={counts} />
       <main className="content">
         {route.name === "gallery" && (
@@ -98,6 +101,7 @@ function Shell() {
             onBack={() => setRoute({ name: "gallery" })}
           />
         )}
+        {route.name === "stats" && <StatsView matches={matches} totals={totals} onOpen={(id) => setRoute({ name: "match", id })} />}
         {route.name === "settings" && <SettingsView />}
       </main>
     </div>

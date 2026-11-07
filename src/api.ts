@@ -48,10 +48,25 @@ export interface Match {
   chests: number;
   died: boolean;
   victory: boolean;
+  /** Resumen de fin de partida del replay: no está si el jugador salió antes. */
+  placement?: number | null;
+  total_players?: number | null;
+  /** 0–1. */
+  accuracy?: number | null;
+  assists?: number | null;
+  damage_dealt?: number | null;
+  damage_taken?: number | null;
+  damage_to_structures?: number | null;
+  revives?: number | null;
+  materials_gathered?: number | null;
+  materials_used?: number | null;
+  distance_m?: number | null;
   events: MatchEvent[];
   clips: Clip[];
   drive?: DriveRef | null;
   replay?: string | null;
+  /** Cuenta de Epic: solo la tienen las partidas reales (no las grabaciones manuales). */
+  account_id?: string | null;
   status: MatchStatus;
   error?: string | null;
   /** Conservada: no vence. */
@@ -68,6 +83,12 @@ export interface Totals {
   chests: number;
   victories: number;
   seconds: number;
+  damage_dealt?: number;
+  distance_m?: number;
+  /** Mejor puesto y promedio, solo entre las partidas que tienen puesto. */
+  best_placement?: number | null;
+  avg_placement?: number | null;
+  placed_matches?: number;
   since?: string | null;
 }
 
@@ -108,6 +129,8 @@ export interface DriveSettings {
   upload_full_match: boolean;
   upload_clips: boolean;
   delete_local_after_upload: boolean;
+  /** Formato de la copia que se sube: "hevc" | "av1" | "h264" | "original". */
+  codec: string;
 }
 
 export interface Settings {
@@ -177,6 +200,8 @@ export interface UploadProgress {
   download?: boolean;
   /** Subida en pausa porque estás jugando. */
   waiting?: boolean;
+  /** Comprimiendo antes de subir: sent/total = milisegundos procesados / duración. */
+  compressing?: boolean;
 }
 
 export const api = {
@@ -212,6 +237,10 @@ export const api = {
   overlayClose: () => invoke<void>("overlay_close"),
   overlayIdle: () => invoke<void>("overlay_idle"),
   openInMain: (id: string, clipId?: string) => invoke<void>("open_in_main", { id, clipId: clipId ?? null }),
+  /** Resumen con los mejores momentos de la partida (reemplaza el anterior). */
+  createReel: (id: string) => invoke<Clip>("create_reel", { id }),
+  /** Versión vertical 9:16 de un clip, con el marcador de la partida. */
+  createVertical: (id: string, clipId: string) => invoke<Clip>("create_vertical", { id, clipId }),
 };
 
 export function fileUrl(m: Pick<Match, "dir">, file: string, bust?: string | number) {
@@ -290,7 +319,12 @@ export function longestShot(m: Pick<Match, "events">) {
 }
 
 export function clipTag(kind: string) {
-  return kind === "hotkey" ? "Atajo" : kind === "manual" ? "Editor" : "Auto";
+  return kind === "hotkey" ? "Atajo" : kind === "manual" ? "Editor" : kind === "reel" ? "Resumen" : kind === "vertical" ? "Vertical" : "Auto";
+}
+
+/** El resumen y las versiones verticales no son un tramo de la partida: no van en la línea de tiempo. */
+export function onTimeline(c: Pick<Clip, "kind">) {
+  return c.kind !== "reel" && c.kind !== "vertical";
 }
 
 /** Momento de la caída del jugador (para "Eliminado 14:03"). */

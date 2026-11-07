@@ -26,6 +26,9 @@ pub struct UploadProgress {
     /// En pausa porque estás jugando.
     #[serde(default)]
     pub waiting: bool,
+    /// Comprimiendo antes de subir (`sent`/`total` = segundos procesados / duración).
+    #[serde(default)]
+    pub compressing: bool,
 }
 
 fn key(match_id: &str, clip_id: Option<&str>) -> String {
@@ -52,7 +55,7 @@ pub async fn upload(app: &AppHandle, shared: &Shared, match_id: &str, clip_id: O
     }
     let r = upload_inner(app, shared, match_id, clip_id, &k).await;
     ACTIVE.lock().unwrap().remove(&k);
-    let _ = app.emit("upload", UploadProgress { key: k, sent: 0, total: 0, done: true, error: r.as_ref().err().map(|e| format!("{e:#}")), download: false, waiting: false });
+    let _ = app.emit("upload", UploadProgress { key: k, sent: 0, total: 0, done: true, error: r.as_ref().err().map(|e| format!("{e:#}")), download: false, waiting: false, compressing: false });
     r
 }
 
@@ -75,26 +78,30 @@ async fn upload_inner(app: &AppHandle, shared: &Shared, match_id: &str, clip_id:
     let paused = || {
         let p = shared.is_playing();
         if p {
-            let _ = app.emit("upload", UploadProgress { key: k.to_string(), sent: 0, total, done: false, error: None, download: false, waiting: true });
+            let _ = app.emit("upload", UploadProgress { key: k.to_string(), sent: 0, total, done: false, error: None, download: false, waiting: true, compressing: false });
         }
         p
     };
     while paused() {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
-    let (drive, folder) = drive_for(shared).await?;
-    let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
-    let file_id = drive
-        .upload(&path, &name, &folder, |sent, total| {
-            if last_emit.elapsed().as_millis() > 300 || sent == total {
-                last_emit = std::time::Instant::now();
-                let _ = app.emit("upload", UploadProgress { key: k.to_string(), sent, total, done: false, error: None, download: false, waiting: false });
-            }
-        }, paused)
-        .await?;
-    let r = DriveRef { link: format!("https://drive.google.com/file/d/{file_id}/view"), file_id };
-    let local_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    let verified = local_size > 0 && drive.file_size(&r.file_id).await.ok().flatten() == Some(local_size);
+    // Copia comprimida solo para Drive (la de la PC queda intacta).
+    let duration = match clip_id {
+        Some(cid) => meta.clips.iter().find(|c| c.id == cid).map(|c| c.end - c.start).unwrap_or(0.0),
+        None => meta.duration_s,
+    };
+    let compressed = compress_for_drive(app, shared, &path, duration, k).await;
+    let upload_path = compressed.clone().unwrap_or_else(|| path.clone());
+    let result = upload_file(app, shared, &upload_path, &name, k, &paused).await;
+    if let Some(tmp) = &compressed {
+        let _ = std::fs::remove_file(tmp);
+    }
+    let (drive, file_id, uploaded_size) = result?;
+    let r = DriveRef { link: format!("https://drive.google.com/file/d/{file_id}/view"), file_id, size: Some(uploaded_size) };
+    let verified = uploaded_size > 0 && drive.file_size(&r.file_id).await.ok().flatten() == Some(uploaded_size);
+    if compressed.is_some() {
+        log::info!("{name}: subida comprimida ({:.0} MB → {:.0} MB)", total as f64 / 1e6, uploaded_size as f64 / 1e6);
+    }
     if meta.keep {
         let _ = drive.patch(&r.file_id, serde_json::json!({ "starred": true })).await;
     }
@@ -116,6 +123,81 @@ async fn upload_inner(app: &AppHandle, shared: &Shared, match_id: &str, clip_id:
     lib.save(&meta)?;
     let _ = app.emit("library", ());
     Ok(r)
+}
+
+/// Sube un archivo a la carpeta de ggswp y devuelve (cliente, id, bytes subidos).
+async fn upload_file(app: &AppHandle, shared: &Shared, path: &std::path::Path, name: &str, k: &str, paused: &(dyn Fn() -> bool + Sync)) -> Result<(Drive, String, u64)> {
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let (drive, folder) = drive_for(shared).await?;
+    let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let file_id = drive
+        .upload(path, name, &folder, |sent, total| {
+            if last_emit.elapsed().as_millis() > 300 || sent == total {
+                last_emit = std::time::Instant::now();
+                let _ = app.emit("upload", UploadProgress { key: k.to_string(), sent, total, done: false, error: None, download: false, waiting: false, compressing: false });
+            }
+        }, paused)
+        .await?;
+    Ok((drive, file_id, size))
+}
+
+/// Recodifica con NVENC una copia más liviana para Drive (≈ 4 veces menos que la grabación,
+/// casi igual a la vista). Devuelve `None` si está desactivado o si algo falla: en ese caso
+/// se sube el original.
+async fn compress_for_drive(app: &AppHandle, shared: &Shared, src: &std::path::Path, duration: f64, k: &str) -> Option<std::path::PathBuf> {
+    let settings = shared.settings.read().unwrap().clone();
+    let video = match settings.drive.codec.as_str() {
+        "hevc" => vec!["-c:v", "hevc_nvenc", "-cq", "28", "-tag:v", "hvc1"],
+        "av1" => vec!["-c:v", "av1_nvenc", "-cq", "34"],
+        "h264" => vec!["-c:v", "h264_nvenc", "-cq", "26"],
+        _ => return None,
+    };
+    let ffmpeg = crate::engine::ffmpeg_path(app, &settings);
+    let dst = src.with_extension("drive.mp4");
+    let original = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+    let (app2, k2, src2, dst2) = (app.clone(), k.to_string(), src.to_path_buf(), dst.clone());
+    let total = (duration * 1000.0).max(1.0) as u64;
+    let ok = tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        use std::io::BufRead;
+        use std::os::windows::process::CommandExt;
+        let mut child = std::process::Command::new(&ffmpeg)
+            .args(["-hide_banner", "-v", "error", "-y", "-hwaccel", "auto", "-i"])
+            .arg(&src2)
+            .args(["-map", "0"])
+            .args(&video)
+            .args(["-preset", "p5", "-tune", "hq", "-rc", "vbr", "-b:v", "0", "-maxrate", "25M", "-bufsize", "50M", "-c:a", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats"])
+            .arg(&dst2)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(crate::capture::video::CREATE_NO_WINDOW | 0x4000)
+            .spawn()?;
+        let mut last = 0u64;
+        for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
+            if let Some(ms) = line.strip_prefix("out_time_ms=").and_then(|v| v.parse::<u64>().ok()) {
+                let done = (ms / 1000).min(total);
+                if done >= last + total / 100 {
+                    last = done;
+                    let _ = app2.emit("upload", UploadProgress { key: k2.clone(), sent: done, total, done: false, error: None, download: false, waiting: false, compressing: true });
+                }
+            }
+        }
+        if !child.wait()?.success() {
+            bail!("ffmpeg falló");
+        }
+        Ok(())
+    })
+    .await;
+    let size = std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
+    match ok {
+        Ok(Ok(())) if size > 0 && size < original => Some(dst),
+        other => {
+            if let Ok(Err(e)) = other {
+                log::warn!("{}: no se pudo comprimir para Drive, se sube el original: {e:#}", src.display());
+            }
+            let _ = std::fs::remove_file(&dst);
+            None
+        }
+    }
 }
 
 /// Borra el archivo local si todo lo que lo usa (la partida y/o sus clips) ya está en Drive.
@@ -144,15 +226,15 @@ fn offload(lib: &crate::library::Library, meta: &mut MatchMeta, file: &str) {
 pub async fn offload_verified(shared: &Shared, match_id: &str) -> Result<usize> {
     let lib = shared.library();
     let meta = lib.load(match_id)?;
-    let mut candidates: Vec<(String, String)> = Vec::new();
+    let mut candidates: Vec<(String, DriveRef)> = Vec::new();
     if let (Some(v), Some(d)) = (&meta.video, &meta.drive)
         && !meta.offloaded
     {
-        candidates.push((v.clone(), d.file_id.clone()));
+        candidates.push((v.clone(), d.clone()));
     }
     for c in meta.clips.iter().filter(|c| !c.offloaded) {
         if let Some(d) = &c.drive {
-            candidates.push((c.file.clone(), d.file_id.clone()));
+            candidates.push((c.file.clone(), d.clone()));
         }
     }
     candidates.retain(|(file, _)| lib.file(match_id, file).exists());
@@ -161,11 +243,12 @@ pub async fn offload_verified(shared: &Shared, match_id: &str) -> Result<usize> 
     }
     let (drive, _) = drive_for(shared).await?;
     let mut verified = Vec::new();
-    for (file, id) in candidates {
-        let local = std::fs::metadata(lib.file(match_id, &file)).map(|m| m.len()).unwrap_or(0);
-        match drive.file_size(&id).await? {
-            Some(n) if n == local && local > 0 => verified.push(file),
-            other => log::warn!("{match_id}/{file}: en Drive no coincide ({other:?} vs {local} bytes); se conserva en la PC"),
+    for (file, d) in candidates {
+        // Si se subió una copia comprimida, se compara con el tamaño que se subió.
+        let expected = d.size.unwrap_or_else(|| std::fs::metadata(lib.file(match_id, &file)).map(|m| m.len()).unwrap_or(0));
+        match drive.file_size(&d.file_id).await? {
+            Some(n) if n == expected && expected > 0 => verified.push(file),
+            other => log::warn!("{match_id}/{file}: en Drive no coincide ({other:?} vs {expected} bytes); se conserva en la PC"),
         }
     }
     let mut meta = lib.load(match_id)?;
@@ -191,7 +274,7 @@ pub async fn download(app: &AppHandle, shared: &Shared, match_id: &str, clip_id:
     }
     let r = download_inner(app, shared, match_id, clip_id, &k).await;
     ACTIVE.lock().unwrap().remove(&k);
-    let _ = app.emit("upload", UploadProgress { key: k, sent: 0, total: 0, done: true, error: r.as_ref().err().map(|e| format!("{e:#}")), download: true, waiting: false });
+    let _ = app.emit("upload", UploadProgress { key: k, sent: 0, total: 0, done: true, error: r.as_ref().err().map(|e| format!("{e:#}")), download: true, waiting: false, compressing: false });
     r
 }
 
@@ -217,7 +300,7 @@ async fn download_inner(app: &AppHandle, shared: &Shared, match_id: &str, clip_i
             .download(&drive_ref.file_id, &path, |sent, total| {
                 if last_emit.elapsed().as_millis() > 300 || sent == total {
                     last_emit = std::time::Instant::now();
-                    let _ = app.emit("upload", UploadProgress { key: k.to_string(), sent, total, done: false, error: None, download: true, waiting: false });
+                    let _ = app.emit("upload", UploadProgress { key: k.to_string(), sent, total, done: false, error: None, download: true, waiting: false, compressing: false });
                 }
             })
             .await?;
@@ -225,6 +308,7 @@ async fn download_inner(app: &AppHandle, shared: &Shared, match_id: &str, clip_i
     let mut meta = lib.load(match_id)?;
     if meta.video.as_deref() == Some(file.as_str()) {
         meta.offloaded = false;
+        meta.size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(meta.size_bytes);
     }
     for c in meta.clips.iter_mut().filter(|c| c.file == file) {
         c.offloaded = false;
@@ -318,7 +402,7 @@ mod tests {
             title: id.into(),
             kind: "hotkey".into(),
             created_at: chrono::Utc::now(),
-            drive: drive.then(|| DriveRef { file_id: id.into(), link: String::new() }),
+            drive: drive.then(|| DriveRef { file_id: id.into(), link: String::new(), size: None }),
             offloaded: false,
         }
     }
@@ -341,7 +425,7 @@ mod tests {
         assert!(!lib.file("m", "clips/a.mp4").exists());
         assert!(meta.clips[1].offloaded && !meta.offloaded);
 
-        meta.drive = Some(DriveRef { file_id: "m".into(), link: String::new() });
+        meta.drive = Some(DriveRef { file_id: "m".into(), link: String::new(), size: None });
         offload(&lib, &mut meta, "match.mp4");
         assert!(!lib.file("m", "match.mp4").exists());
         assert!(meta.offloaded && meta.clips[0].offloaded);

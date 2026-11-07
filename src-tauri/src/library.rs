@@ -30,6 +30,9 @@ pub struct MatchEvent {
 pub struct DriveRef {
     pub file_id: String,
     pub link: String,
+    /// Tamaño del archivo subido (puede ser una copia comprimida, más chica que la local).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +84,19 @@ pub struct MatchMeta {
     pub chests: u32,
     pub died: bool,
     pub victory: bool,
+    /// Resumen de fin de partida del replay (no está si el jugador salió antes).
+    pub placement: Option<u32>,
+    pub total_players: Option<u32>,
+    /// 0–1.
+    pub accuracy: Option<f32>,
+    pub assists: Option<u32>,
+    pub damage_dealt: Option<u32>,
+    pub damage_taken: Option<u32>,
+    pub damage_to_structures: Option<u32>,
+    pub revives: Option<u32>,
+    pub materials_gathered: Option<u32>,
+    pub materials_used: Option<u32>,
+    pub distance_m: Option<f64>,
     pub events: Vec<MatchEvent>,
     pub clips: Vec<Clip>,
     pub drive: Option<DriveRef>,
@@ -109,6 +125,29 @@ impl MatchMeta {
         match clip {
             Some(c) => format!("{day} - {} - {}.mp4", clean(&self.title), clean(&c.title)),
             None => format!("{day} - {}.mp4", clean(&self.title)),
+        }
+    }
+
+    /// Copia el resumen de fin de partida del replay. Sin resumen (p. ej. al re-analizar sin
+    /// replay) se conservan los datos que ya había. Puesto 1 y victoria siempre coinciden.
+    pub fn apply_stats(&mut self, stats: Option<&crate::fortnite::replay::MatchStats>) {
+        if let Some(s) = stats {
+            self.placement = s.placement;
+            self.total_players = s.total_players;
+            self.accuracy = s.accuracy;
+            self.assists = s.assists;
+            self.damage_dealt = s.damage_dealt;
+            self.damage_taken = s.damage_taken;
+            self.damage_to_structures = s.damage_to_structures;
+            self.revives = s.revives;
+            self.materials_gathered = s.materials_gathered;
+            self.materials_used = s.materials_used;
+            self.distance_m = s.distance_m;
+        }
+        if self.placement == Some(1) {
+            self.victory = true;
+        } else if self.victory && self.placement.is_none() {
+            self.placement = Some(1);
         }
     }
 }

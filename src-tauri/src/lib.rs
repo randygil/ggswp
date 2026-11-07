@@ -5,6 +5,7 @@ pub mod fortnite;
 pub mod gdrive;
 pub mod hotkeys;
 pub mod library;
+pub mod montage;
 pub mod overlay;
 pub mod retention;
 pub mod share;
@@ -170,6 +171,36 @@ async fn export_clip(app: AppHandle, state: State<'_, AppState>, id: String, sta
     .await
     .map_err(err)?
     .map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("library", ());
+    Ok(clip)
+}
+
+/// Resumen de la partida con sus mejores momentos; reemplaza el anterior.
+#[tauri::command]
+async fn create_reel(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<Clip> {
+    let shared = state.shared.clone();
+    let (app2, id2) = (app.clone(), id.clone());
+    let (clip, old) = tauri::async_runtime::spawn_blocking(move || montage::create_reel(&app2, &shared, &id2))
+        .await
+        .map_err(err)?
+        .map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("library", ());
+    let stale: Vec<&DriveRef> = old.iter().filter_map(|c| c.drive.as_ref()).collect();
+    if let Err(e) = uploads::trash(&state.shared, &stale).await {
+        log::warn!("{id}: el resumen anterior sigue en Drive: {e:#}");
+    }
+    Ok(clip)
+}
+
+/// Versión vertical 9:16 de un clip, con el marcador de la partida.
+#[tauri::command]
+async fn create_vertical(app: AppHandle, state: State<'_, AppState>, id: String, clip_id: String) -> CmdResult<Clip> {
+    let shared = state.shared.clone();
+    let app2 = app.clone();
+    let clip = tauri::async_runtime::spawn_blocking(move || montage::create_vertical(&app2, &shared, &id, &clip_id))
+        .await
+        .map_err(err)?
+        .map_err(|e| format!("{e:#}"))?;
     let _ = app.emit("library", ());
     Ok(clip)
 }
@@ -368,6 +399,8 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(move |app| {
             let settings_path = app.path().app_config_dir()?.join("settings.json");
@@ -433,6 +466,8 @@ pub fn run() {
             drive_open,
             reveal,
             check_setup,
+            create_reel,
+            create_vertical,
         ])
         .run(tauri::generate_context!())
         .expect("error al iniciar ggswp");

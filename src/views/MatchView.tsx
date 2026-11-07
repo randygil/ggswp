@@ -11,6 +11,7 @@ import {
   fmtClock,
   fmtDate,
   fmtSize,
+  onTimeline,
   pad2,
   type Clip,
   type Match,
@@ -20,11 +21,12 @@ import {
 } from "../api";
 import { useContextMenu } from "../components/ContextMenu";
 import { Icon } from "../components/Icon";
-import { clipMenuItems, eventMenuItems, selectAround, useRun } from "../components/menus";
+import { clipMenuItems, eventMenuItems, makeVertical, selectAround, useRun } from "../components/menus";
 import { ShareDialog } from "../components/ShareDialog";
 import { rulerStep } from "../components/Signature";
 import { StepProgress } from "../components/StepProgress";
 import { useToast } from "../components/Toast";
+import { hasPlacement, summaryRows } from "../matchStats";
 
 type Source = { kind: "match" } | { kind: "clip"; clip: Clip };
 
@@ -55,6 +57,16 @@ export function MatchView(props: {
   useEffect(() => {
     if (source.kind === "clip" && m && !m.clips.some((c) => c.id === source.clip.id)) setSource({ kind: "match" });
   }, [m, source]);
+
+  // Un clip recién creado (resumen, vertical) se abre cuando llega en la lista de la partida.
+  const [pendingClip, setPendingClip] = useState<string | null>(null);
+  useEffect(() => {
+    const c = pendingClip ? m?.clips.find((c) => c.id === pendingClip) : undefined;
+    if (c) {
+      setSource({ kind: "clip", clip: c });
+      setPendingClip(null);
+    }
+  }, [m, pendingClip]);
 
   if (!m) {
     return (
@@ -102,7 +114,17 @@ export function MatchView(props: {
     } else fn();
   };
   const canClip = m.status === "ready" && !m.offloaded && !!m.video;
-  const eventMenu = (ev: React.MouseEvent, e: MatchEvent) =>
+  const hasReel = m.clips.some((c) => c.kind === "reel");
+  // Al terminar, se abre el clip nuevo en la pestaña de clips.
+  const showClip = (c: Clip) => {
+    setPendingClip(c.id);
+    setTab("clips");
+  };
+  const createReel = () =>
+    run("Resumen listo", async () => {
+      showClip(await api.createReel(m.id));
+    });
+  const eventMenu =(ev: React.MouseEvent, e: MatchEvent) =>
     menu.open(
       ev,
       eventMenuItems(e.t, {
@@ -148,6 +170,7 @@ export function MatchView(props: {
             {fmtDate(m.created_at)}
             {m.duration_s > 0 && ` · ${fmtClock(m.duration_s)}`}
             {m.mode && ` · ${m.mode}`}
+            {hasPlacement(m) && ` · #${m.placement}${m.total_players ? `/${m.total_players}` : ""}`}
             {m.width > 0 && ` · ${m.width}×${m.height}`}
             {m.size_bytes > 0 && ` · ${fmtSize(m.size_bytes)}`}
             {` · ${pad2(m.kills)} elim`}
@@ -203,6 +226,14 @@ export function MatchView(props: {
             aria-label="Borrar partida"
           >
             <Icon name="trash" />
+          </button>
+          <button
+            className="btn ghost"
+            disabled={!canClip || !!step}
+            onClick={createReel}
+            title={m.offloaded ? "Descarga el video para crear un resumen" : "Junta las eliminaciones y los mejores momentos en un solo video"}
+          >
+            <Icon name="film" size={16} /> {hasReel ? "Rehacer resumen" : "Crear resumen"}
           </button>
           <button className="btn light" onClick={() => setShare(source.kind === "clip" ? { clip: source.clip } : {})}>
             <Icon name="upload" size={16} /> Compartir
@@ -297,11 +328,37 @@ export function MatchView(props: {
               <dt>Derribos</dt>
               <dd>{pad2(m.knocks)}</dd>
             </div>
-            <div>
-              <dt>{m.victory ? "Victoria" : died !== null ? "Caída" : "Resultado"}</dt>
-              <dd className={m.victory ? "accent" : died !== null ? "flare" : ""}>{m.victory ? "#1" : died !== null ? fmtClock(died) : "—"}</dd>
-            </div>
+            {hasPlacement(m) ? (
+              <div>
+                <dt>{m.placement === 1 ? "Victoria" : "Puesto"}</dt>
+                <dd className={m.placement === 1 ? "accent" : ""}>
+                  #{m.placement}
+                  {m.total_players != null && <small> / {m.total_players}</small>}
+                </dd>
+              </div>
+            ) : (
+              <div>
+                <dt>{m.victory ? "Victoria" : died !== null ? "Caída" : "Resultado"}</dt>
+                <dd className={m.victory ? "accent" : died !== null ? "flare" : ""}>{m.victory ? "#1" : died !== null ? fmtClock(died) : "—"}</dd>
+              </div>
+            )}
           </dl>
+          {summaryRows(m).length > 0 && (
+            <dl className="side-more" aria-label="Resumen de fin de partida">
+              {hasPlacement(m) && died !== null && m.placement !== 1 && (
+                <div>
+                  <dt>Caída</dt>
+                  <dd className="flare">{fmtClock(died)}</dd>
+                </div>
+              )}
+              {summaryRows(m).map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
           <div className="tabs" role="tablist" aria-label="Contenido de la partida">
             <button role="tab" aria-selected={tab === "events"} className={tab === "events" ? "on" : ""} onClick={() => setTab("events")}>
               Eventos <span>{pad2(m.events.length)}</span>
@@ -346,7 +403,10 @@ export function MatchView(props: {
                     key={c.id}
                     className={active ? "active" : ""}
                     onContextMenu={(e) =>
-                      menu.open(e, clipMenuItems(m, c, { play: () => setSource({ kind: "clip", clip: c }), share: () => setShare({ clip: c }), run, busy: !!up }))
+                      menu.open(
+                        e,
+                        clipMenuItems(m, c, { play: () => setSource({ kind: "clip", clip: c }), share: () => setShare({ clip: c }), run, busy: !!up, onCreated: showClip }),
+                      )
                     }
                   >
                     <button className="clip-main" onClick={() => setSource({ kind: "clip", clip: c })} aria-current={active}>
@@ -354,8 +414,9 @@ export function MatchView(props: {
                       <span>
                         <b>{c.title}</b>
                         <small>
-                          {fmtClock(c.start)} → {fmtClock(c.end)} · {fmtClock(c.end - c.start)}
-                          {up && ` · ${up.download ? "bajando" : "subiendo"} ${Math.round((up.sent / Math.max(1, up.total)) * 100)} %`}
+                          {c.kind === "reel" ? `Resumen · ${fmtClock(c.end - c.start)}` : `${fmtClock(c.start)} → ${fmtClock(c.end)} · ${fmtClock(c.end - c.start)}`}
+                          {c.kind === "vertical" && " · 9:16"}
+                          {up &&` · ${up.download ? "bajando" : "subiendo"} ${Math.round((up.sent / Math.max(1, up.total)) * 100)} %`}
                           {c.offloaded && !up && " · solo en Drive"}
                         </small>
                       </span>
@@ -364,6 +425,17 @@ export function MatchView(props: {
                       <button className="icon-btn sm bare" title="Compartir" aria-label={`Compartir ${c.title}`} onClick={() => setShare({ clip: c })}>
                         <Icon name="upload" size={16} />
                       </button>
+                      {c.kind !== "vertical" && (
+                        <button
+                          className="icon-btn sm bare"
+                          title="Versión vertical (TikTok, Shorts, Reels)"
+                          aria-label={`Crear versión vertical de ${c.title}`}
+                          disabled={!!c.offloaded || !!step || m.status !== "ready"}
+                          onClick={() => makeVertical(m, c, run, showClip)}
+                        >
+                          <Icon name="phone" size={16} />
+                        </button>
+                      )}
                       <button
                         className="icon-btn sm bare"
                         title={c.drive ? "Abrir en Google Drive" : "Subir a Drive"}
@@ -558,7 +630,7 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
       }),
     );
   };
-  const lanesClips = useMemo(() => (clip ? [] : match.clips.filter((c) => c.end <= match.duration_s + 1)), [clip, match]);
+  const lanesClips = useMemo(() => (clip ? [] : match.clips.filter((c) => onTimeline(c) && c.end <= match.duration_s + 1)), [clip, match]);
 
   const step = rulerStep(dur || 1);
   const half = step / 2;
