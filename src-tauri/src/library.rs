@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::capture::video::{CREATE_NO_WINDOW, VideoOptions, encoder_args};
+use crate::capture::video::CREATE_NO_WINDOW;
 use crate::fortnite::log::{LogEvent, Timed};
 use crate::fortnite::replay::{PlayerRef, Replay};
 
@@ -204,6 +204,20 @@ impl Library {
     pub fn file(&self, id: &str, name: &str) -> PathBuf {
         self.dir(id).join(name)
     }
+
+    /// Borra del disco el video de un clip, su miniatura y sus copias para compartir. El
+    /// video no se toca si es el de la partida (clip guardado con el atajo fuera de partida).
+    pub fn remove_clip_files(&self, m: &MatchMeta, c: &Clip) {
+        if Some(&c.file) != m.video.as_ref() {
+            let _ = std::fs::remove_file(self.file(&m.id, &c.file));
+        }
+        if let Some(t) = &c.thumb {
+            let _ = std::fs::remove_file(self.file(&m.id, t));
+        }
+        for q in ["share", "small"] {
+            let _ = std::fs::remove_file(self.file(&m.id, &format!("share/{}-{q}.mp4", c.id)));
+        }
+    }
 }
 
 /// Lo que el motor recolecta del log mientras dura la grabación.
@@ -394,21 +408,26 @@ fn run(cmd: &mut Command) -> Result<std::process::Output> {
     Ok(o)
 }
 
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Probe {
     pub duration: f64,
     pub width: u32,
     pub height: u32,
+    /// 0 si ffmpeg no lo informa.
+    pub fps: f64,
 }
 
 pub fn probe(ffmpeg: &Path, video: &Path) -> Result<Probe> {
     static DUR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Duration: (\d+):(\d+):(\d+\.\d+)").unwrap());
     static RES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Video: .*?, (\d{2,5})x(\d{2,5})").unwrap());
+    static FPS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Video: .*?, (\d+(?:\.\d+)?) fps").unwrap());
     let o = Command::new(ffmpeg).args(["-hide_banner", "-i"]).arg(video).creation_flags(CREATE_NO_WINDOW).output()?;
     let s = String::from_utf8_lossy(&o.stderr);
     let d = DUR.captures(&s).context("sin duración")?;
     let duration = d[1].parse::<f64>()? * 3600.0 + d[2].parse::<f64>()? * 60.0 + d[3].parse::<f64>()?;
     let (width, height) = RES.captures(&s).map(|c| (c[1].parse().unwrap_or(0), c[2].parse().unwrap_or(0))).unwrap_or((0, 0));
-    Ok(Probe { duration, width, height })
+    let fps = FPS.captures(&s).and_then(|c| c[1].parse().ok()).unwrap_or(0.0);
+    Ok(Probe { duration, width, height, fps })
 }
 
 pub fn thumbnail(ffmpeg: &Path, video: &Path, at: f64, out: &Path) -> Result<()> {
@@ -426,18 +445,6 @@ pub fn cut_copy(ffmpeg: &Path, video: &Path, start: f64, end: f64, out: &Path) -
         .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{start:.3}"), "-i"])
         .arg(video)
         .args(["-t", &format!("{:.3}", end - start), "-c", "copy", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart"])
-        .arg(out))?;
-    Ok(())
-}
-
-/// Corte exacto al frame, recodificando con NVENC (para el editor).
-pub fn cut_precise(ffmpeg: &Path, video: &Path, start: f64, end: f64, opts: &VideoOptions, out: &Path) -> Result<()> {
-    run(Command::new(ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{start:.3}"), "-i"])
-        .arg(video)
-        .args(["-t", &format!("{:.3}", end - start)])
-        .args(encoder_args(opts))
-        .args(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"])
         .arg(out))?;
     Ok(())
 }

@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod config;
 pub mod engine;
+pub mod export;
 pub mod fortnite;
 pub mod gdrive;
 pub mod hotkeys;
@@ -12,6 +13,7 @@ pub mod share;
 pub mod stats;
 pub mod tray;
 pub mod uploads;
+pub mod winshare;
 
 use std::os::windows::process::CommandExt;
 use std::sync::{Arc, Mutex};
@@ -24,8 +26,9 @@ use tauri_plugin_opener::OpenerExt as _;
 use capture::video::CREATE_NO_WINDOW;
 use config::Settings;
 use engine::{Cmd, Shared, Status};
+use export::Quality;
 use library::{Clip, DriveRef, MatchMeta};
-use share::{ShareLink, ShareServer};
+use share::{Firewall, ShareLink, ShareServer};
 
 pub struct AppState {
     pub shared: Arc<Shared>,
@@ -43,11 +46,20 @@ struct MatchView {
     #[serde(flatten)]
     meta: MatchMeta,
     dir: String,
+    /// Tamaño en disco de cada clip que está en la PC, por id.
+    clip_sizes: std::collections::HashMap<String, u64>,
 }
 
 fn view(shared: &Shared, meta: MatchMeta) -> MatchView {
-    let dir = shared.library().dir(&meta.id).display().to_string();
-    MatchView { meta, dir }
+    let lib = shared.library();
+    let dir = lib.dir(&meta.id).display().to_string();
+    let clip_sizes = meta
+        .clips
+        .iter()
+        .filter(|c| !c.offloaded)
+        .filter_map(|c| Some((c.id.clone(), std::fs::metadata(lib.file(&meta.id, &c.file)).ok()?.len())))
+        .collect();
+    MatchView { meta, dir, clip_sizes }
 }
 
 #[tauri::command]
@@ -128,11 +140,8 @@ async fn delete_clip(app: AppHandle, state: State<'_, AppState>, id: String, cli
     if let Some(d) = m.clips.iter().find(|c| c.id == clip_id).and_then(|c| c.drive.as_ref()) {
         uploads::trash(&state.shared, &[d]).await.map_err(|e| format!("No se pudo borrar de Drive: {e:#}"))?;
     }
-    if let Some(c) = m.clips.iter().find(|c| c.id == clip_id && Some(&c.file) != m.video.as_ref()) {
-        let _ = std::fs::remove_file(lib.file(&id, &c.file));
-        if let Some(t) = &c.thumb {
-            let _ = std::fs::remove_file(lib.file(&id, t));
-        }
+    if let Some(c) = m.clips.iter().find(|c| c.id == clip_id) {
+        lib.remove_clip_files(&m, c);
     }
     m.clips.retain(|c| c.id != clip_id);
     lib.save(&m).map_err(err)?;
@@ -140,8 +149,21 @@ async fn delete_clip(app: AppHandle, state: State<'_, AppState>, id: String, cli
     Ok(())
 }
 
+/// Exporta un tramo desde el editor. `source` es el clip que se está editando (sin él, la
+/// partida completa); `start` y `end` son segundos dentro de ese video.
 #[tauri::command]
-async fn export_clip(app: AppHandle, state: State<'_, AppState>, id: String, start: f64, end: f64, title: String) -> CmdResult<Clip> {
+#[allow(clippy::too_many_arguments)]
+async fn export_clip(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    source: Option<String>,
+    start: f64,
+    end: f64,
+    title: String,
+    quality: Option<Quality>,
+    frame: String,
+) -> CmdResult<Clip> {
     if end - start < 0.5 {
         return Err("El clip es demasiado corto".into());
     }
@@ -151,19 +173,69 @@ async fn export_clip(app: AppHandle, state: State<'_, AppState>, id: String, sta
         let settings = shared.settings.read().unwrap().clone();
         let ffmpeg = engine::ffmpeg_path(&app2, &settings);
         let lib = shared.library();
-        let mut m = lib.load(&id)?;
-        if m.offloaded {
+        let m = lib.load(&id)?;
+        let from = match &source {
+            Some(cid) => Some(m.clips.iter().find(|c| &c.id == cid).ok_or_else(|| anyhow::anyhow!("clip no encontrado"))?.clone()),
+            None => None,
+        };
+        if from.as_ref().map_or(m.offloaded, |c| c.offloaded) {
             anyhow::bail!("El video está solo en Drive: descárgalo para editarlo");
         }
-        let video = lib.file(&id, m.video.as_deref().unwrap_or("match.mp4"));
+        let file = from.as_ref().map(|c| c.file.clone()).or_else(|| m.video.clone()).unwrap_or_else(|| "match.mp4".into());
+        // Un clip que ya es vertical se recorta tal cual.
+        let from_vertical = from.as_ref().is_some_and(|c| c.kind == "vertical");
+        let mobile = (frame == "mobile" && !from_vertical).then_some(settings.mobile_layout);
+        let vertical = (frame == "vertical" || mobile.is_some()) && !from_vertical;
         let cid = library::new_id("edit");
         std::fs::create_dir_all(lib.file(&id, "clips"))?;
-        let file = format!("clips/{cid}.mp4");
-        library::cut_precise(&ffmpeg, &video, start, end, &engine::video_options(&settings, 0), &lib.file(&id, &file))?;
+        let out_file = format!("clips/{cid}.mp4");
+        let out = lib.file(&id, &out_file);
+        let job = export::Job {
+            src: &lib.file(&id, &file),
+            cut: Some((start, end - start)),
+            quality: quality.unwrap_or_else(|| Quality::from_setting(&settings.clip_quality)),
+            vertical,
+            badge: montage::vertical_badge(m.kills, m.victory),
+            mobile,
+        };
+        shared.set_step(&app2, &id, "Exportando clip", Some(0.0));
+        let result = export::render(&ffmpeg, &job, &engine::video_options(&settings, 0), &out, &|p| shared.set_step(&app2, &id, "Exportando clip", Some(p)));
+        montage::clear_step(&app2, &shared, &id);
+        if let Err(e) = result {
+            let _ = std::fs::remove_file(&out);
+            return Err(e);
+        }
         let thumb = format!("clips/{cid}.jpg");
-        let thumb_ok = library::thumbnail(&ffmpeg, &lib.file(&id, &file), ((end - start) / 2.0).min(3.0), &lib.file(&id, &thumb)).is_ok();
-        let title = if title.trim().is_empty() { "Clip".to_string() } else { title.trim().to_string() };
-        let clip = Clip { id: cid, file, thumb: thumb_ok.then_some(thumb), start, end, title, kind: "manual".into(), created_at: chrono::Utc::now(), drive: None, offloaded: false };
+        let thumb_ok = library::thumbnail(&ffmpeg, &out, ((end - start) / 2.0).min(3.0), &lib.file(&id, &thumb)).is_ok();
+        let title = match (title.trim(), &from) {
+            ("", Some(c)) if vertical => format!("{} · {}", c.title, if mobile.is_some() { "móvil" } else { "vertical" }),
+            ("", Some(c)) => c.title.clone(),
+            ("", None) => "Clip".to_string(),
+            (t, _) => t.to_string(),
+        };
+        // Los tiempos de un clip son los de la partida. Un recorte de un resumen o de un
+        // vertical no corresponde a un tramo de la partida: no va en la línea de tiempo.
+        let on_timeline = from.as_ref().is_none_or(|c| !matches!(c.kind.as_str(), "reel" | "vertical" | "cut"));
+        let offset = from.as_ref().filter(|_| on_timeline).map_or(0.0, |c| c.start);
+        let (kind, clip_start) = match (vertical || from_vertical, on_timeline) {
+            (true, _) => ("vertical", offset + start),
+            (false, true) => ("manual", offset + start),
+            (false, false) => ("cut", 0.0),
+        };
+        let clip = Clip {
+            id: cid,
+            file: out_file,
+            thumb: thumb_ok.then_some(thumb),
+            start: clip_start,
+            end: clip_start + (end - start),
+            title,
+            kind: kind.into(),
+            created_at: chrono::Utc::now(),
+            drive: None,
+            offloaded: false,
+        };
+        // Se vuelve a leer: la partida pudo cambiar mientras se codificaba.
+        let mut m = lib.load(&id)?;
         m.clips.push(clip.clone());
         lib.save(&m)?;
         Ok(clip)
@@ -173,6 +245,24 @@ async fn export_clip(app: AppHandle, state: State<'_, AppState>, id: String, sta
     .map_err(|e| format!("{e:#}"))?;
     let _ = app.emit("library", ());
     Ok(clip)
+}
+
+/// Guarda las zonas del HUD y el encuadre del modo móvil que se ajustan en el editor.
+#[tauri::command]
+fn set_mobile_layout(state: State<AppState>, layout: export::MobileLayout) -> CmdResult<()> {
+    let mut s = state.shared.settings.write().unwrap();
+    s.mobile_layout = layout;
+    s.save(&state.shared.settings_path).map_err(err)
+}
+
+/// Pasa al formato liviano los clips que ya existían a la calidad de grabación.
+#[tauri::command]
+async fn compress_clips(app: AppHandle, state: State<'_, AppState>) -> CmdResult<export::Compressed> {
+    let shared = state.shared.clone();
+    let app2 = app.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || export::compress_existing(&app2, &shared)).await.map_err(err)?;
+    let _ = app.emit("library", ());
+    r.map_err(|e| format!("{e:#}"))
 }
 
 /// Resumen de la partida con sus mejores momentos; reemplaza el anterior.
@@ -303,15 +393,98 @@ fn media_path(shared: &Shared, id: &str, clip_id: Option<&str>) -> anyhow::Resul
     })
 }
 
+/// Archivo de la partida o del clip en el formato pedido, ya preparado con `share_prepare`.
+fn shared_media(app: &AppHandle, shared: &Shared, id: &str, clip_id: Option<&str>, quality: Quality) -> anyhow::Result<(std::path::PathBuf, String)> {
+    let (src, title) = media_path(shared, id, clip_id)?;
+    let ffmpeg = engine::ffmpeg_path(app, &shared.settings.read().unwrap());
+    Ok((export::shared_file(&ffmpeg, &shared.library(), id, clip_id, &src, quality)?, title))
+}
+
+/// Deja listo el archivo a compartir en el formato pedido (lo comprime si hace falta).
 #[tauri::command]
-fn share_lan(state: State<AppState>, id: String, clip_id: Option<String>) -> CmdResult<ShareLink> {
-    let (path, title) = media_path(&state.shared, &id, clip_id.as_deref()).map_err(err)?;
+async fn share_prepare(app: AppHandle, state: State<'_, AppState>, id: String, clip_id: Option<String>, quality: Quality) -> CmdResult<export::ShareFile> {
+    let shared = state.shared.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (src, _) = media_path(&shared, &id, clip_id.as_deref())?;
+        export::prepare(&app, &shared, &id, clip_id.as_deref(), &src, quality)
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))
+}
+
+/// Lleva el archivo a otra app: `copy` (portapapeles), `system` (ventana "Compartir" de
+/// Windows) o `reveal` (seleccionarlo en el Explorador).
+#[tauri::command]
+async fn share_file(app: AppHandle, state: State<'_, AppState>, id: String, clip_id: Option<String>, quality: Quality, action: String) -> CmdResult<()> {
+    let shared = state.shared.clone();
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        let (path, title) = shared_media(&app, &shared, &id, clip_id.as_deref(), quality)?;
+        if action == "reveal" {
+            std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display().to_string().replace('/', "\\"))).spawn()?;
+            return Ok(());
+        }
+        let file = winshare::SharedFile::open(&path)?;
+        let window = app.get_webview_window("main").ok_or_else(|| anyhow::anyhow!("sin ventana principal"))?;
+        let hwnd = windows::Win32::Foundation::HWND(window.hwnd()?.0);
+        // El portapapeles y la ventana de compartir solo funcionan desde el hilo de la interfaz.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let hwnd = hwnd.0 as isize;
+        app.run_on_main_thread(move || {
+            let r = match action.as_str() {
+                "copy" => winshare::copy_to_clipboard(&file),
+                _ => winshare::show_share_ui(windows::Win32::Foundation::HWND(hwnd as _), file, &title),
+            };
+            let _ = tx.send(r);
+        })?;
+        rx.recv()?
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))
+}
+
+/// Guarda una copia del archivo a compartir donde elija el usuario.
+#[tauri::command]
+async fn share_save(app: AppHandle, state: State<'_, AppState>, id: String, clip_id: Option<String>, quality: Quality, dest: String) -> CmdResult<()> {
+    let shared = state.shared.clone();
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        let (path, _) = shared_media(&app, &shared, &id, clip_id.as_deref(), quality)?;
+        std::fs::copy(path, dest)?;
+        Ok(())
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+fn share_lan(app: AppHandle, state: State<AppState>, id: String, clip_id: Option<String>, quality: Quality, ip: Option<String>) -> CmdResult<ShareLink> {
+    let (path, title) = shared_media(&app, &state.shared, &id, clip_id.as_deref(), quality).map_err(|e| format!("{e:#}"))?;
     let mut guard = state.share.lock().unwrap();
     if guard.is_none() {
         let port = state.shared.settings.read().unwrap().share_port;
         *guard = Some(ShareServer::start(port).map_err(|e| format!("{e:#}"))?);
     }
-    guard.as_ref().unwrap().share(path, title).map_err(|e| format!("{e:#}"))
+    guard.as_ref().unwrap().share(path, title, ip.as_deref()).map_err(|e| format!("{e:#}"))
+}
+
+/// Si el firewall de Windows deja que el teléfono llegue a esta PC por la red de `adapter`.
+#[tauri::command]
+async fn share_firewall(adapter: Option<String>) -> CmdResult<Firewall> {
+    tauri::async_runtime::spawn_blocking(move || share::firewall_state(adapter.as_deref())).await.map_err(err)?.map_err(|e| format!("{e:#}"))
+}
+
+/// Permite la app en el firewall (pide permiso de administrador) y devuelve el estado nuevo.
+#[tauri::command]
+async fn share_firewall_allow(adapter: Option<String>) -> CmdResult<Firewall> {
+    tauri::async_runtime::spawn_blocking(move || {
+        share::firewall_allow()?;
+        share::firewall_state(adapter.as_deref())
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -458,6 +631,13 @@ pub fn run() {
             overlay_idle,
             open_in_main,
             share_lan,
+            share_prepare,
+            share_file,
+            share_save,
+            share_firewall,
+            share_firewall_allow,
+            compress_clips,
+            set_mobile_layout,
             drive_connect,
             drive_disconnect,
             drive_upload,

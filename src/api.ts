@@ -28,9 +28,52 @@ export interface Clip {
   offloaded?: boolean;
 }
 
+/** Formato de salida de un video: liviano para compartir, mínimo (menos de 16 MB) u original. */
+export type Quality = "share" | "small" | "original";
+
+export const QUALITY_LABEL: Record<Quality, string> = {
+  share: "Para compartir · 1080p",
+  small: "Liviano · menos de 16 MB",
+  original: "Calidad original",
+};
+
+/** Archivo listo para compartir en un formato. */
+export interface ShareFile {
+  quality: Quality;
+  size_bytes: number;
+  original_bytes: number;
+  width: number;
+  height: number;
+}
+
+/** Encuadre de un clip exportado: como se grabó, recorte central 9:16 o modo móvil (9:16 con la salud y las armas en una franja). */
+export type Frame = "horizontal" | "vertical" | "mobile";
+
+/** Rectángulo dentro del cuadro de la grabación, en fracciones (0–1) del ancho y del alto. */
+export interface Region {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Zonas del HUD y encuadre del modo móvil. */
+export interface MobileLayout {
+  health: Region;
+  weapons: Region;
+  /** Centro horizontal del recorte del juego (0–1). */
+  focus: number;
+  /** La salud arriba y las armas abajo, más grandes, en vez de lado a lado. */
+  two_rows: boolean;
+}
+
+export type Firewall = "allowed" | "blocked" | "unknown";
+
 export interface Match {
   id: string;
   dir: string;
+  /** Tamaño en disco de cada clip que está en la PC, por id. */
+  clip_sizes?: Record<string, number>;
   created_at: string;
   title: string;
   mode?: string | null;
@@ -151,6 +194,9 @@ export interface Settings {
   clip_before_s: number;
   clip_after_s: number;
   clip_deaths: boolean;
+  /** Formato de los clips que se crean: "share" (1080p liviano) u "original". */
+  clip_quality: "share" | "original";
+  mobile_layout: MobileLayout;
   ffmpeg_path: string | null;
   share_port: number;
   launch_at_startup: boolean;
@@ -181,6 +227,8 @@ export interface Monitor {
 export interface ShareLink {
   url: string;
   qr_svg: string;
+  /** Direcciones de esta PC en la red local (solo en el enlace por Wi-Fi). */
+  addresses?: { ip: string; name: string }[];
 }
 
 export interface SetupCheck {
@@ -216,13 +264,30 @@ export const api = {
   updateMatch: (id: string, patch: { title?: string; keep?: boolean }) =>
     invoke<void>("update_match", { id, title: patch.title ?? null, keep: patch.keep ?? null }),
   deleteClip: (id: string, clipId: string) => invoke<void>("delete_clip", { id, clipId }),
-  exportClip: (id: string, start: number, end: number, title: string) =>
-    invoke<Clip>("export_clip", { id, start, end, title }),
+  /** Exporta un tramo del video de la partida o, con `source`, de uno de sus clips. */
+  exportClip: (id: string, o: { source?: string; start: number; end: number; title: string; quality: Quality; frame: Frame }) =>
+    invoke<Clip>("export_clip", { id, ...o, source: o.source ?? null }),
+  /** Guarda las zonas y el encuadre del modo móvil que se ajustan en el editor. */
+  setMobileLayout: (layout: MobileLayout) => invoke<void>("set_mobile_layout", { layout }),
+  /** Pasa al formato liviano los clips que siguen a la calidad de grabación. */
+  compressClips: () => invoke<{ clips: number; saved_bytes: number }>("compress_clips"),
   reprocess: (id: string) => invoke<void>("reprocess_match", { id }),
   startRecording: () => invoke<void>("start_recording"),
   stopRecording: () => invoke<void>("stop_recording"),
   monitors: () => invoke<Monitor[]>("list_monitors"),
-  shareLan: (id: string, clipId?: string) => invoke<ShareLink>("share_lan", { id, clipId: clipId ?? null }),
+  /** Deja listo el archivo en ese formato (lo comprime si hace falta; avisa con `share-progress`). */
+  sharePrepare: (id: string, clipId: string | undefined, quality: Quality) =>
+    invoke<ShareFile>("share_prepare", { id, clipId: clipId ?? null, quality }),
+  /** `copy`: al portapapeles · `system`: ventana "Compartir" de Windows · `reveal`: en el Explorador. */
+  shareFile: (id: string, clipId: string | undefined, quality: Quality, action: "copy" | "system" | "reveal") =>
+    invoke<void>("share_file", { id, clipId: clipId ?? null, quality, action }),
+  shareSave: (id: string, clipId: string | undefined, quality: Quality, dest: string) =>
+    invoke<void>("share_save", { id, clipId: clipId ?? null, quality, dest }),
+  shareLan: (id: string, clipId: string | undefined, quality: Quality, ip?: string) =>
+    invoke<ShareLink>("share_lan", { id, clipId: clipId ?? null, quality, ip: ip ?? null }),
+  shareFirewall: (adapter?: string) => invoke<Firewall>("share_firewall", { adapter: adapter ?? null }),
+  /** Pide permiso de administrador y permite la app en el firewall de Windows. */
+  shareFirewallAllow: (adapter?: string) => invoke<Firewall>("share_firewall_allow", { adapter: adapter ?? null }),
   driveConnect: () => invoke<string>("drive_connect"),
   driveDisconnect: () => invoke<void>("drive_disconnect"),
   driveUpload: (id: string, clipId?: string) => invoke<DriveRef>("drive_upload", { id, clipId: clipId ?? null }),
@@ -264,6 +329,7 @@ export function fmtDate(iso: string) {
 
 export function fmtSize(bytes: number) {
   if (bytes > 1e9) return `${(bytes / 1e9).toFixed(1).replace(".", ",")} GB`;
+  if (bytes < 9.95e6) return `${(bytes / 1e6).toFixed(1).replace(".", ",")} MB`;
   return `${Math.round(bytes / 1e6)} MB`;
 }
 
@@ -319,12 +385,12 @@ export function longestShot(m: Pick<Match, "events">) {
 }
 
 export function clipTag(kind: string) {
-  return kind === "hotkey" ? "Atajo" : kind === "manual" ? "Editor" : kind === "reel" ? "Resumen" : kind === "vertical" ? "Vertical" : "Auto";
+  return kind === "hotkey" ? "Atajo" : kind === "manual" || kind === "cut" ? "Editor" : kind === "reel" ? "Resumen" : kind === "vertical" ? "Vertical" : "Auto";
 }
 
-/** El resumen y las versiones verticales no son un tramo de la partida: no van en la línea de tiempo. */
+/** El resumen, las versiones verticales y sus recortes no son un tramo de la partida: no van en la línea de tiempo. */
 export function onTimeline(c: Pick<Clip, "kind">) {
-  return c.kind !== "reel" && c.kind !== "vertical";
+  return c.kind !== "reel" && c.kind !== "vertical" && c.kind !== "cut";
 }
 
 /** Momento de la caída del jugador (para "Eliminado 14:03"). */

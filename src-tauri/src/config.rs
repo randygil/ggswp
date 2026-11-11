@@ -82,6 +82,11 @@ pub struct Settings {
     pub clip_before_s: f64,
     pub clip_after_s: f64,
     pub clip_deaths: bool,
+    /// Formato de los clips que se crean: "share" (1080p liviano, listo para compartir) u
+    /// "original" (resolución y calidad de la grabación).
+    pub clip_quality: String,
+    /// Zonas del HUD y encuadre del modo móvil del editor.
+    pub mobile_layout: crate::export::MobileLayout,
     pub ffmpeg_path: Option<PathBuf>,
     pub share_port: u16,
     pub launch_at_startup: bool,
@@ -125,6 +130,8 @@ impl Default for Settings {
             clip_before_s: 12.0,
             clip_after_s: 4.0,
             clip_deaths: true,
+            clip_quality: "share".into(),
+            mobile_layout: Default::default(),
             ffmpeg_path: None,
             share_port: 8765,
             launch_at_startup: false,

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, errText, type Monitor, type Settings, type SetupCheck } from "../api";
+import { api, errText, fmtSize, type Monitor, type Settings, type SetupCheck } from "../api";
 import { useToast } from "../components/Toast";
 import { HotkeyInput } from "../components/HotkeyInput";
 
@@ -26,6 +26,7 @@ export function SettingsView() {
   const [check, setCheck] = useState<SetupCheck | null>(null);
   const [dirty, setDirty] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [compressing, setCompressing] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -53,6 +54,18 @@ export function SettingsView() {
       api.checkSetup().then(setCheck);
     } catch (e) {
       toast.error(errText(e));
+    }
+  };
+  const compressClips = async () => {
+    if (!confirm("Los clips que siguen a la calidad de grabación pasan a 1080p liviano y se reemplazan. La partida completa no se toca. ¿Comprimirlos?")) return;
+    setCompressing(true);
+    try {
+      const r = await api.compressClips();
+      toast.info(r.clips ? `${r.clips} clips comprimidos · ${fmtSize(r.saved_bytes)} liberados` : "No había clips por comprimir");
+    } catch (e) {
+      toast.error(errText(e));
+    } finally {
+      setCompressing(false);
     }
   };
   const num = (v: string, d: number) => (v === "" || isNaN(Number(v)) ? d : Number(v));
@@ -163,7 +176,27 @@ export function SettingsView() {
       </section>
 
       <section className="panel">
-        <h2>Clips automáticos</h2>
+        <h2>Clips</h2>
+        <Row
+          label="Formato de los clips"
+          hint="Para compartir: H.264 a 1080p, cerca de 1 MB por segundo; entra en WhatsApp e Instagram. Original: como la grabación, unas 10 veces más pesado."
+        >
+          <select value={s.clip_quality} onChange={(e) => set("clip_quality", e.target.value as Settings["clip_quality"])}>
+            <option value="share">Para compartir · 1080p (recomendado)</option>
+            <option value="original">Calidad original</option>
+          </select>
+        </Row>
+        <Row label="Clips que ya tienes" hint="Pasa al formato liviano los clips guardados a la calidad de grabación. El avance se ve en cada partida.">
+          <button className="btn ghost" disabled={compressing} onClick={compressClips}>
+            {compressing ? (
+              <>
+                <span className="spinner" /> Comprimiendo…
+              </>
+            ) : (
+              "Comprimir clips existentes"
+            )}
+          </button>
+        </Row>
         <Row
           label="Contar cofres abiertos"
           hint="Al terminar la partida lee en el video los avisos de experiencia (+PE · COFRE). Tarda unos segundos por cada minuto de partida."

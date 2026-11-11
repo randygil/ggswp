@@ -13,14 +13,19 @@ import {
   fmtSize,
   onTimeline,
   pad2,
+  QUALITY_LABEL,
   type Clip,
+  type Frame,
   type Match,
   type MatchEvent,
+  type MobileLayout,
+  type Quality,
   type Step,
   type UploadProgress,
 } from "../api";
 import { useContextMenu } from "../components/ContextMenu";
 import { Icon } from "../components/Icon";
+import { DEFAULT_MOBILE_LAYOUT, MobileOverlay, MobilePreview } from "../components/MobileFrame";
 import { clipMenuItems, eventMenuItems, makeVertical, selectAround, useRun } from "../components/menus";
 import { ShareDialog } from "../components/ShareDialog";
 import { rulerStep } from "../components/Signature";
@@ -37,11 +42,13 @@ export function MatchView(props: {
   uploads: Record<string, UploadProgress>;
   retentionDays?: number;
   localDays?: number;
+  /** Formato en que se crean los clips (Ajustes): el que propone el editor. */
+  clipQuality?: Quality;
   /** Paso en curso si la partida se está procesando o re-analizando. */
   step?: Step;
   onBack: () => void;
 }) {
-  const { id, matches, uploads, retentionDays, localDays, step, onBack } = props;
+  const { id, matches, uploads, retentionDays, localDays, clipQuality, step, onBack } = props;
   const m = matches.find((x) => x.id === id);
   const toast = useToast();
   const menu = useContextMenu();
@@ -248,11 +255,15 @@ export function MatchView(props: {
               key={src}
               src={src}
               match={m}
-              clip={source.kind === "clip" ? source.clip : undefined}
-              onExport={async (start, end, title) => {
-                const c = await api.exportClip(m.id, start, end, title);
+              clip={activeClip}
+              defaultQuality={clipQuality ?? "share"}
+              busy={!!step}
+              onExport={async (o) => {
+                const c = await api.exportClip(m.id, { ...o, source: activeClip?.id });
                 toast.info(`Clip "${c.title}" guardado`);
-                setTab("clips");
+                // Desde la partida se sigue cortando; un recorte de un clip se abre para verlo.
+                if (activeClip) showClip(c);
+                else setTab("clips");
               }}
             />
           ) : onlyDrive ? (
@@ -394,7 +405,7 @@ export function MatchView(props: {
             </ol>
           ) : (
             <ol className="clip-list">
-              {m.clips.length === 0 && <li className="muted pad">Sin clips. Marca un tramo con I y O y expórtalo.</li>}
+              {m.clips.length === 0 && <li className="muted pad">Sin clips. Usa «Nuevo clip» en el editor, ajusta el tramo y expórtalo.</li>}
               {m.clips.map((c) => {
                 const up = uploads[`${m.id}/${c.id}`];
                 const active = source.kind === "clip" && source.clip.id === c.id;
@@ -414,8 +425,9 @@ export function MatchView(props: {
                       <span>
                         <b>{c.title}</b>
                         <small>
-                          {c.kind === "reel" ? `Resumen · ${fmtClock(c.end - c.start)}` : `${fmtClock(c.start)} → ${fmtClock(c.end)} · ${fmtClock(c.end - c.start)}`}
+                          {onTimeline(c) ? `${fmtClock(c.start)} → ${fmtClock(c.end)} · ${fmtClock(c.end - c.start)}` : `${c.kind === "reel" ? "Resumen · " : ""}${fmtClock(c.end - c.start)}`}
                           {c.kind === "vertical" && " · 9:16"}
+                          {m.clip_sizes?.[c.id] != null && ` · ${fmtSize(m.clip_sizes[c.id])}`}
                           {up &&` · ${up.download ? "bajando" : "subiendo"} ${Math.round((up.sent / Math.max(1, up.total)) * 100)} %`}
                           {c.offloaded && !up && " · solo en Drive"}
                         </small>
@@ -482,8 +494,19 @@ export function MatchView(props: {
 /** Las etiquetas centradas sobre el cursor no se salen de la pista en los extremos. */
 const edgeSafe = (p: string) => `clamp(26px, ${p}, calc(100% - 26px))`;
 
-function Player(props: { src: string; match: Match; clip?: Clip; onExport: (start: number, end: number, title: string) => Promise<void> }) {
-  const { src, match, clip, onExport } = props;
+type ExportOptions = { start: number; end: number; title: string; quality: Quality; frame: Frame };
+
+function Player(props: {
+  src: string;
+  match: Match;
+  /** Clip que se está viendo; sin él, la partida completa. */
+  clip?: Clip;
+  defaultQuality: Quality;
+  /** La partida está ocupada con otro paso (análisis, resumen…). */
+  busy: boolean;
+  onExport: (o: ExportOptions) => Promise<void>;
+}) {
+  const { src, match, clip, defaultQuality, busy, onExport } = props;
   const video = useRef<HTMLVideoElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const bar = useRef<HTMLDivElement>(null);
@@ -496,11 +519,28 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
   const [hover, setHover] = useState<number | null>(null);
   const [title, setTitle] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [quality, setQuality] = useState<Quality>(defaultQuality);
+  const [frame, setFrame] = useState<Frame>("horizontal");
+  // Un clip vertical se recorta tal cual: no se puede volver a encuadrar.
+  const canFrame = clip?.kind !== "vertical";
+  // Las zonas se ven solo mientras hay algo que exportar.
+  const mobile = frame === "mobile" && canFrame && (!!range || !!clip);
+  // Zonas del modo móvil: se guardan en los ajustes al soltar cada cambio.
+  const [layout, setLayout] = useState<MobileLayout>(DEFAULT_MOBILE_LAYOUT);
+  useEffect(() => {
+    api.settings().then((s) => s.mobile_layout && setLayout(s.mobile_layout)).catch(() => {});
+  }, []);
+  const commitLayout = (l: MobileLayout) => {
+    setLayout(l);
+    api.setMobileLayout(l).catch((e) => toast.error(errText(e)));
+  };
   const drag = useRef<"a" | "b" | "seek" | null>(null);
   const evLane = useRef<HTMLDivElement>(null);
   const menu = useContextMenu();
   const run = useRun();
-  const editable = !clip;
+  const toast = useToast();
+  /** Los eventos y las marcas de la partida solo aplican a su video completo. */
+  const inMatch = !clip;
 
   const seek = useCallback((s: number) => {
     const v = video.current;
@@ -546,14 +586,14 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
   );
 
   useEffect(() => {
-    if (!editable) return;
+    if (!inMatch) return;
     const onSelect = (e: Event) => {
       const { start, end } = (e as CustomEvent<{ start: number; end: number }>).detail;
       selectRange(start, end);
     };
     window.addEventListener("ggswp-select", onSelect);
     return () => window.removeEventListener("ggswp-select", onSelect);
-  }, [editable, selectRange]);
+  }, [inMatch, selectRange]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -567,8 +607,8 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
       else if (k === "arrowright" || k === "l") seek(v.currentTime + (e.shiftKey ? 1 : 5));
       else if (k === ",") seek(v.currentTime - 1 / 60);
       else if (k === ".") seek(v.currentTime + 1 / 60);
-      else if (k === "i" && editable) markIn();
-      else if (k === "o" && editable) markOut();
+      else if (k === "i") markIn();
+      else if (k === "o") markOut();
       else if (k === "escape") setRange(null);
       else if (k === "m") setMuted((x) => !x);
       else if (k === "f") fullscreen();
@@ -577,7 +617,7 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggle, seek, markIn, markOut, editable, fullscreen]);
+  }, [toggle, seek, markIn, markOut, fullscreen]);
 
   useEffect(() => {
     if (video.current) {
@@ -625,7 +665,7 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
       e,
       eventMenuItems(t, {
         seek: () => seek(Math.max(0, t - 3)),
-        makeClip: editable ? () => selectRange(t - 10, t + 4) : undefined,
+        makeClip: () => selectRange(t - 10, t + 4),
         run,
       }),
     );
@@ -636,13 +676,24 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
   const half = step / 2;
   const ticks = useMemo(() => Array.from({ length: Math.floor((dur || 0) / half) + 1 }, (_, i) => i * half), [dur, half]);
 
+  /** Tramo nuevo de 15 s alrededor del cursor, listo para ajustar con las asas. */
+  const newClip = () => {
+    const now = video.current?.currentTime ?? 0;
+    selectRange(now - 5, now + 10);
+  };
+
+  // Sin tramo marcado, un clip se exporta entero (en otro formato o en vertical).
+  const whole = !range && !!clip;
   const doExport = async () => {
-    if (!range) return;
+    const span = range ?? (clip ? { a: 0, b: video.current?.duration || dur } : null);
+    if (!span) return;
     setExporting(true);
     try {
-      await onExport(range.a, range.b, title);
+      await onExport({ start: span.a, end: span.b, title, quality, frame: canFrame ? frame : "horizontal" });
       setRange(null);
       setTitle("");
+    } catch (e) {
+      toast.error(errText(e));
     } finally {
       setExporting(false);
     }
@@ -650,7 +701,7 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
 
   return (
     <div className="player">
-      <div className="video-wrap" ref={wrap} onDoubleClick={fullscreen}>
+      <div className={`video-wrap ${mobile ? "mobile" : ""}`} ref={wrap} onDoubleClick={fullscreen}>
         <video
           ref={video}
           src={src}
@@ -665,6 +716,8 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
         />
+        {mobile && <MobileOverlay video={video} layout={layout} onChange={setLayout} onCommit={commitLayout} />}
+        {mobile && <MobilePreview video={video} layout={layout} />}
       </div>
 
       <div className="controls">
@@ -700,51 +753,113 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
       </div>
 
       <section className="editor" aria-label="Editor de línea de tiempo">
-        {editable && (
-          <div className="editor-top">
-            <span className="label">Selección</span>
+        <div className="editor-top">
+          <span className="label">{clip ? "Recorte" : "Selección"}</span>
+          {range ? (
+            <>
+              <span className="editor-range">
+                {fmtClock(range.a)}
+                <i>→</i>
+                {fmtClock(range.b)}
+              </span>
+              <span className="editor-len">{(range.b - range.a).toFixed(1).replace(".", ",")} s</span>
+            </>
+          ) : (
+            <span className="muted small">{clip ? "Clip completo. Marca un tramo para recortarlo." : "Marca el tramo que quieres convertir en clip."}</span>
+          )}
+          <div className="editor-actions">
             {range ? (
               <>
-                <span className="editor-range">
-                  {fmtClock(range.a)}
-                  <i>→</i>
-                  {fmtClock(range.b)}
-                </span>
-                <span className="editor-len">{(range.b - range.a).toFixed(1).replace(".", ",")} s</span>
+                <button className="btn ghost sm" onClick={markIn}>
+                  Entrada <kbd>I</kbd>
+                </button>
+                <button className="btn ghost sm" onClick={markOut}>
+                  Salida <kbd>O</kbd>
+                </button>
+                <button className="btn ghost sm" onClick={() => (seek(range.a), video.current?.play())}>
+                  Previsualizar
+                </button>
+                <button className="btn ghost sm" onClick={() => setRange(null)}>
+                  Cancelar
+                </button>
               </>
             ) : (
-              <span className="muted small">Marca entrada y salida para crear un clip</span>
+              <button className={`btn sm ${clip ? "ghost" : "primary"}`} onClick={newClip}>
+                <Icon name="scissors" size={15} /> {clip ? "Recortar" : "Nuevo clip"}
+              </button>
             )}
-            <div className="editor-actions">
-              <button className="btn ghost sm" onClick={markIn}>
-                Entrada <kbd>I</kbd>
-              </button>
-              <button className="btn ghost sm" onClick={markOut}>
-                Salida <kbd>O</kbd>
-              </button>
-              {range && (
+          </div>
+        </div>
+
+        {mobile && (
+          <p className="muted small mf-help">
+            Sobre el video: arrastra <b>Salud</b> y <b>Armas</b> hasta cubrir esas partes de tu HUD (la esquina de cada zona cambia su tamaño) y mueve <b>Encuadre</b> para elegir qué parte del juego
+            se ve. A la derecha, el resultado.
+          </p>
+        )}
+        {(range || clip) && (
+          <div className="export-bar">
+            <span className="label">Exportar</span>
+            {canFrame && (
+              <div className="seg" role="group" aria-label="Encuadre">
+                <button className={frame === "horizontal" ? "on" : ""} aria-pressed={frame === "horizontal"} onClick={() => setFrame("horizontal")}>
+                  Horizontal
+                </button>
+                <button className={frame === "vertical" ? "on" : ""} aria-pressed={frame === "vertical"} onClick={() => setFrame("vertical")} title="Recorte central 9:16 con el marcador de la partida">
+                  Vertical 9:16
+                </button>
+                <button
+                  className={frame === "mobile" ? "on" : ""}
+                  aria-pressed={frame === "mobile"}
+                  onClick={() => setFrame("mobile")}
+                  title="9:16 con la salud y las armas en una franja arriba, para TikTok, Reels y Shorts"
+                >
+                  Móvil
+                </button>
+              </div>
+            )}
+            {mobile && (
+              <>
+                <button
+                  className="btn ghost sm"
+                  aria-pressed={layout.two_rows}
+                  onClick={() => commitLayout({ ...layout, two_rows: !layout.two_rows })}
+                  title="La salud arriba y las armas abajo, más grandes"
+                >
+                  {layout.two_rows ? "HUD en una fila" : "HUD en dos filas"}
+                </button>
+                <button className="btn ghost sm" onClick={() => commitLayout(DEFAULT_MOBILE_LAYOUT)} title="Vuelve a las zonas del HUD de Fortnite a escala 100 %">
+                  Restablecer zonas
+                </button>
+              </>
+            )}
+            <label className="sort" style={{ marginLeft: 0 }}>
+              Calidad
+              <select value={quality} onChange={(e) => setQuality(e.target.value as Quality)}>
+                {(["share", "small", "original"] as Quality[]).map((q) => (
+                  <option key={q} value={q}>
+                    {QUALITY_LABEL[q]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <input className="input" aria-label="Nombre del clip" placeholder="Nombre del clip" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} />
+            <button
+              className="btn primary sm"
+              disabled={exporting || busy}
+              title={busy && !exporting ? "Espera a que termine el paso en curso" : undefined}
+              onClick={doExport}
+            >
+              {exporting ? (
                 <>
-                  <button className="btn ghost sm" onClick={() => (seek(range.a), video.current?.play())}>
-                    Previsualizar
-                  </button>
-                  <input className="input" aria-label="Nombre del clip" placeholder="Nombre del clip" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} />
-                  <button className="btn ghost sm" onClick={() => setRange(null)}>
-                    Cancelar
-                  </button>
-                  <button className="btn primary sm" disabled={exporting} onClick={doExport}>
-                    {exporting ? (
-                      <>
-                        <span className="spinner" /> Exportando…
-                      </>
-                    ) : (
-                      <>
-                        <Icon name="scissors" size={15} /> Exportar clip
-                      </>
-                    )}
-                  </button>
+                  <span className="spinner" /> Exportando…
+                </>
+              ) : (
+                <>
+                  <Icon name="film" size={15} /> {whole ? "Exportar clip completo" : "Exportar clip"}
                 </>
               )}
-            </div>
+            </button>
           </div>
         )}
 
@@ -821,11 +936,9 @@ function Player(props: { src: string; match: Match; clip?: Clip; onExport: (star
         </div>
 
         <div className="legend">
-          {editable && (
-            <span>
-              <kbd>I</kbd> / <kbd>O</kbd> entrada y salida
-            </span>
-          )}
+          <span>
+            <kbd>I</kbd> / <kbd>O</kbd> entrada y salida
+          </span>
           <span>
             <kbd>← →</kbd> 5 s
           </span>

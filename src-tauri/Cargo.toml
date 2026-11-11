@@ -1,6 +1,6 @@
 [package]
 name = "ggswp"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Grabador automatico de partidas de Fortnite"
 
@@ -39,6 +39,7 @@ urlencoding = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+windows-collections = "0.3"
 
 [dependencies.windows]
 version = "0.62"
@@ -51,6 +52,13 @@ features = [
   "Win32_System_Threading",
   "Win32_System_ProcessStatus",
   "Win32_System_Performance",
+  "Win32_System_Com",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
+  "Win32_UI_Shell",
+  "ApplicationModel_DataTransfer",
+  "Storage",
   "Foundation",
   "Foundation_Collections",
   "Graphics_Imaging",

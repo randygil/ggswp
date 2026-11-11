@@ -23,7 +23,12 @@ Una vez instalada, la app avisa sola cuando hay una versión nueva.
 - **Google Drive**: sube solo cuando no estás jugando, con una copia comprimida (HEVC con NVENC,
   unas 4 veces más liviana). Lo que ya está en Drive se borra de la PC a los 7 días y del todo a
   los 15 (las partidas conservadas no vencen). Todo es configurable.
-- **Al teléfono** por Wi-Fi o Drive con un QR, menú de highlights sobre el juego y menús de clic derecho.
+- **Clips livianos**: se guardan en H.264 a 1080p (cerca de 1 MB por segundo) en vez de a la
+  calidad de grabación, listos para WhatsApp e Instagram. El editor exporta en horizontal,
+  vertical 9:16 o **modo móvil** (9:16 con la salud y las armas en una franja arriba; las zonas
+  se ajustan arrastrando sobre el video, con vista previa en vivo) y en tres calidades.
+- **Compartir**: copiar el video al portapapeles, panel "Compartir" de Windows, guardar como,
+  al teléfono por Wi-Fi o Drive con un QR. Menú de highlights sobre el juego y menús de clic derecho.
 
 ## Cómo funciona
 
@@ -65,10 +70,18 @@ En la vista de partida: `I` / `O` marcan inicio y fin, se arrastran los bordes e
 tiempo y **Exportar clip** corta exacto al frame (recodifica con NVENC). `←`/`→` 5 s,
 `Shift+←/→` 1 s, `,`/`.` frame a frame, `Espacio` pausa, `F` pantalla completa.
 
-### Enviar al teléfono
+### Compartir
 
+Antes de compartir se elige el formato: **para compartir** (1080p, ~1 MB/s), **liviano**
+(720p, menos de 16 MB) u **original**. Si hace falta, la copia se codifica en el momento y
+queda en la carpeta `share/` de la partida.
+
+- **Archivo**: copiar el video (para pegarlo con Ctrl+V en WhatsApp, Discord o Telegram),
+  abrir el panel "Compartir" de Windows, guardar como o mostrarlo en la carpeta.
 - **Wi-Fi**: QR con un enlace local (`http://<tu-ip>:8765/…`); el teléfono abre el video y
-  puede descargarlo. Debe estar en la misma red. El enlace vence en 24 h.
+  puede descargarlo. Debe estar en la misma red. El enlace vence en 24 h. Se usa la dirección
+  del adaptador de cable o Wi-Fi (no la de una VPN) y, si el firewall de Windows bloquea la
+  app, el diálogo ofrece permitirla (pide permiso de administrador).
 - **Google Drive**: sube el video a la carpeta `ggswp` de tu Drive y genera un QR al enlace
   (visible para quien tenga el link).
 
@@ -121,7 +134,9 @@ src-tauri/src/
   library.rs          biblioteca en disco, línea de tiempo, clips
   overlay.rs          avisos y menú de highlights sobre el juego
   hotkeys.rs          atajos globales
-  share.rs            servidor Wi-Fi + QR
+  share.rs            servidor Wi-Fi + QR, red local y firewall
+  winshare.rs         portapapeles y panel "Compartir" de Windows
+  export.rs           formatos de salida de los clips (liviano, mínimo, original)
   gdrive.rs uploads.rs  Google Drive
   fortnite/chests.rs  cofres abiertos (OCR de los avisos de PE)
   montage.rs          resumen de la partida y versión vertical

@@ -723,10 +723,25 @@ pub fn analyze(
     };
     meta.clips = previous
         .iter()
-        .filter(|c| matches!(c.kind.as_str(), "manual" | "reel" | "vertical") || (c.kind == "hotkey" && ctx.clip_requests.is_empty()))
+        .filter(|c| matches!(c.kind.as_str(), "manual" | "cut" | "reel" | "vertical") || (c.kind == "hotkey" && ctx.clip_requests.is_empty()))
         .cloned()
         .collect();
     let clips_dir = lib.file(&meta.id, "clips");
+    // En formato liviano el corte es exacto al cuadro; a calidad original se copia sin
+    // recodificar (arranca en el keyframe anterior). Si la tarjeta gráfica no puede
+    // codificar ahora, el clip sale igual, a calidad original.
+    let quality = crate::export::Quality::from_setting(&settings.clip_quality);
+    let rec = video_options(settings, 0);
+    let cut = |start: f64, end: f64, out: &std::path::Path| -> anyhow::Result<()> {
+        if quality != crate::export::Quality::Original {
+            let job = crate::export::Job { src: &video, cut: Some((start, end - start)), quality, vertical: false, badge: None, mobile: None };
+            match crate::export::render(ffmpeg, &job, &rec, out, &|_| {}) {
+                Ok(()) => return Ok(()),
+                Err(e) => log::warn!("{id}: clip en formato liviano: {e:#}; se guarda a calidad original"),
+            }
+        }
+        library::cut_copy(ffmpeg, &video, start, end, out)
+    };
     for (i, at) in ctx.clip_requests.iter().enumerate() {
         let end = (secs_between(video_start, *at)).min(meta.duration_s);
         let start = (end - settings.clip_seconds as f64).max(0.0);
@@ -740,7 +755,7 @@ pub fn analyze(
             continue;
         }
         let file = format!("clips/{cid}.mp4");
-        if let Err(e) = library::cut_copy(ffmpeg, &video, start, end, &lib.file(&meta.id, &file)) {
+        if let Err(e) = cut(start, end, &lib.file(&meta.id, &file)) {
             log::warn!("clip {cid}: {e:#}");
             continue;
         }
@@ -761,7 +776,7 @@ pub fn analyze(
             }
             let file = format!("clips/{cid}.mp4");
             let out = lib.file(&meta.id, &file);
-            if let Err(e) = library::cut_copy(ffmpeg, &video, start, end, &out) {
+            if let Err(e) = cut(start, end, &out) {
                 log::warn!("clip {cid}: {e:#}");
                 continue;
             }

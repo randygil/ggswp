@@ -191,7 +191,7 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
   const shot = longestShot(m);
   const word = m.victory ? "Victoria" : m.died ? "Eliminado" : "Partida";
   const sub = m.victory ? "Royale" : m.mode ?? m.title;
-  const autoClips = m.clips.filter((c) => c.kind !== "hotkey" && c.kind !== "manual").length;
+  const autoClips = m.clips.filter((c) => c.kind !== "hotkey" && c.kind !== "manual" && c.kind !== "cut").length;
   const menu = useMatchMenu(m, onOpen);
   return (
     <section className="hero" aria-labelledby="ultima" onContextMenu={menu.onContextMenu}>
@@ -255,7 +255,7 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
               <Icon name="play" size={16} filled /> Ver partida
             </button>
             <button className="btn ghost" onClick={onShare}>
-              <Icon name="upload" size={16} /> Al teléfono
+              <Icon name="upload" size={16} /> Compartir
             </button>
           </div>
         </div>
@@ -436,7 +436,8 @@ export function ClipCard({ m, c, onOpen }: { m: Match; c: Clip; onOpen: () => vo
       <span className="card-big">{c.title}</span>
       <span className="card-meta">
         {m.title}
-        {c.kind !== "reel" && ` · ${fmtClock(c.start)}`}
+        {onTimeline(c) && ` · ${fmtClock(c.start)}`}
+        {m.clip_sizes?.[c.id] != null && ` · ${fmtSize(m.clip_sizes[c.id])}`}
       </span>
     </button>
   );

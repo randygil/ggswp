@@ -97,6 +97,7 @@ function Shell() {
             uploads={uploads}
             retentionDays={settings?.retention_days}
             localDays={settings?.drive.delete_local_after_upload ? undefined : settings?.local_days}
+            clipQuality={settings?.clip_quality}
             step={status?.steps?.[route.id]}
             onBack={() => setRoute({ name: "gallery" })}
           />

@@ -48,7 +48,7 @@ fn record_and_analyze() {
         mode: ctx.mode_name(),
         ..Default::default()
     };
-    analyze(&ffmpeg, &lib, &mut meta, &ctx, Some(&rep), video_start, &settings).unwrap();
+    analyze(&ffmpeg, &lib, &mut meta, &ctx, Some(&rep), video_start, &settings, Vec::new(), &|_, _| {}).unwrap();
     meta.title = format!("Prueba de pipeline · {}", meta.title);
     meta.status = MatchStatus::Ready;
     lib.save(&meta).unwrap();

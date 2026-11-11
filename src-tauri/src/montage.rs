@@ -9,7 +9,8 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 use tauri::{AppHandle, Emitter};
 
-use crate::capture::video::{CREATE_NO_WINDOW, VideoOptions, encoder_args};
+use crate::capture::video::{CREATE_NO_WINDOW, VideoOptions};
+use crate::export::{self, Quality};
 use crate::engine::{self, Shared};
 use crate::library::{self, Clip, MatchEvent, MatchMeta, MatchStatus};
 
@@ -20,7 +21,7 @@ const SEGMENT_MAX_S: f64 = 30.0;
 /// Fundido a negro al salir de cada momento y desde negro al entrar (0,3 s entre momentos).
 const FADE_S: f64 = 0.15;
 const ACCENT: &str = "0x39FF88";
-const FONT_FILE: &str = "C:/Windows/Fonts/bahnschrift.ttf";
+pub(crate) const FONT_FILE: &str = "C:/Windows/Fonts/bahnschrift.ttf";
 
 /// Tramos del resumen, en orden cronológico: eliminaciones, derribos, victoria y momentos
 /// marcados; si son pocos, también los cofres. Si no entran todos, se quedan los mejores.
@@ -106,10 +107,12 @@ pub fn vertical_filter(badge: Option<&(String, String)>, font_file: &str) -> Str
     vf
 }
 
-/// Filtros de un tramo del resumen: fps constante y fundidos de entrada y salida.
-fn segment_filter(dur: f64, fps: u32, audio: bool) -> String {
+/// Filtros de un tramo del resumen: fps constante, la escala del formato de salida (`scale`)
+/// y fundidos de entrada y salida.
+fn segment_filter(dur: f64, fps: u32, scale: &[String], audio: bool) -> String {
     let out = (dur - FADE_S).max(0.0);
-    let mut f = format!("[0:v]setpts=PTS-STARTPTS,fps={fps},format=yuv420p,fade=t=in:st=0:d={FADE_S},fade=t=out:st={out:.3}:d={FADE_S}[v]");
+    let scale: String = scale.iter().map(|f| format!("{f},")).collect();
+    let mut f = format!("[0:v]setpts=PTS-STARTPTS,fps={fps},{scale}format=yuv420p,fade=t=in:st=0:d={FADE_S},fade=t=out:st={out:.3}:d={FADE_S}[v]");
     if audio {
         f.push_str(&format!(
             ";[0:a]aresample=async=1:first_pts=0,apad,atrim=0:{dur:.3},asetpts=PTS-STARTPTS,afade=t=in:st=0:d={FADE_S},afade=t=out:st={out:.3}:d={FADE_S}[a]"
@@ -118,14 +121,14 @@ fn segment_filter(dur: f64, fps: u32, audio: bool) -> String {
     f
 }
 
-fn ffmpeg_cmd(ffmpeg: &Path) -> Command {
+pub(crate) fn ffmpeg_cmd(ffmpeg: &Path) -> Command {
     let mut c = Command::new(ffmpeg);
     c.args(["-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y"]);
     c
 }
 
 /// Ejecuta ffmpeg informando los segundos ya escritos (de `-progress`).
-fn run_progress(cmd: &mut Command, on_secs: &mut dyn FnMut(f64)) -> Result<()> {
+pub(crate) fn run_progress(cmd: &mut Command, on_secs: &mut dyn FnMut(f64)) -> Result<()> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -176,11 +179,14 @@ impl Drop for TempDir {
 /// Codifica cada tramo por separado (con fundidos) y los une sin recodificar el video. El
 /// audio va en PCM en los intermedios y se codifica una sola vez al final, así no se corre
 /// en las uniones.
-pub fn render_reel(ffmpeg: &Path, video: &Path, windows: &[(f64, f64)], opts: &VideoOptions, out: &Path, on_pct: &dyn Fn(f32)) -> Result<()> {
+pub fn render_reel(ffmpeg: &Path, video: &Path, windows: &[(f64, f64)], quality: Quality, opts: &VideoOptions, out: &Path, on_pct: &dyn Fn(f32)) -> Result<()> {
     let audio = has_audio(ffmpeg, video);
+    let src = library::probe(ffmpeg, video).unwrap_or_default();
     let tmp = TempDir(std::env::temp_dir().join(format!("ggswp-{}", library::new_id("reel"))));
     std::fs::create_dir_all(&tmp.0)?;
     let total: f64 = windows.iter().map(|(s, e)| e - s).sum::<f64>().max(0.1);
+    // Los tramos ya salen a `opts.fps`: el plan solo aporta la escala y el codificador.
+    let plan = export::plan(quality, (src.width, src.height), opts.fps as f64, total, opts);
     let mut done = 0.0;
     let mut list = String::new();
     for (i, &(start, end)) in windows.iter().enumerate() {
@@ -189,11 +195,11 @@ pub fn render_reel(ffmpeg: &Path, video: &Path, windows: &[(f64, f64)], opts: &V
         let mut cmd = ffmpeg_cmd(ffmpeg);
         cmd.args(["-ss", &format!("{start:.3}"), "-t", &format!("{dur:.3}"), "-i"])
             .arg(video)
-            .args(["-filter_complex", &segment_filter(dur, opts.fps, audio), "-map", "[v]"]);
+            .args(["-filter_complex", &segment_filter(dur, opts.fps, &plan.filters, audio), "-map", "[v]"]);
         if audio {
             cmd.args(["-map", "[a]", "-c:a", "pcm_s16le"]);
         }
-        cmd.args(encoder_args(opts)).arg(tmp.0.join(&name));
+        cmd.args(&plan.video).arg(tmp.0.join(&name));
         run_progress(&mut cmd, &mut |t| on_pct(((done + t.min(dur)) / total * 95.0) as f32))?;
         done += dur;
         list.push_str(&format!("file '{name}'\n"));
@@ -203,26 +209,15 @@ pub fn render_reel(ffmpeg: &Path, video: &Path, windows: &[(f64, f64)], opts: &V
     let mut cmd = ffmpeg_cmd(ffmpeg);
     cmd.args(["-f", "concat", "-safe", "0", "-i"])
         .arg(&list_path)
-        .args(["-map", "0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"])
+        .args(["-map", "0", "-c:v", "copy"])
+        .args(&plan.audio)
+        .args(["-movflags", "+faststart"])
         .arg(out);
     run_progress(&mut cmd, &mut |t| on_pct((95.0 + t / total * 5.0) as f32))?;
     Ok(())
 }
 
-pub fn render_vertical(ffmpeg: &Path, src: &Path, badge: Option<&(String, String)>, duration: f64, opts: &VideoOptions, out: &Path, on_pct: &dyn Fn(f32)) -> Result<()> {
-    // Sin la fuente de Windows, el video sale igual pero sin marcador.
-    let badge = badge.filter(|_| Path::new(FONT_FILE).exists());
-    let mut cmd = ffmpeg_cmd(ffmpeg);
-    cmd.arg("-i")
-        .arg(src)
-        .args(["-vf", &vertical_filter(badge, FONT_FILE), "-map", "0:v:0", "-map", "0:a?"])
-        .args(encoder_args(opts))
-        .args(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"])
-        .arg(out);
-    run_progress(&mut cmd, &mut |t| on_pct((t / duration.max(0.1) * 100.0) as f32))
-}
-
-fn clear_step(app: &AppHandle, shared: &Shared, id: &str) {
+pub(crate) fn clear_step(app: &AppHandle, shared: &Shared, id: &str) {
     let snapshot = {
         let mut st = shared.status.lock().unwrap();
         st.steps.remove(id);
@@ -260,7 +255,8 @@ pub fn create_reel(app: &AppHandle, shared: &Shared, id: &str) -> Result<(Clip, 
     std::fs::create_dir_all(lib.file(id, "clips"))?;
     shared.set_step(app, id, "Creando resumen", Some(0.0));
     let started = std::time::Instant::now();
-    let result = render_reel(&ffmpeg, &video, &windows, &engine::video_options(&settings, 0), &out, &|p| {
+    let quality = Quality::from_setting(&settings.clip_quality);
+    let result = render_reel(&ffmpeg, &video, &windows, quality, &engine::video_options(&settings, 0), &out, &|p| {
         shared.set_step(app, id, "Creando resumen", Some(p))
     });
     clear_step(app, shared, id);
@@ -290,10 +286,7 @@ pub fn create_reel(app: &AppHandle, shared: &Shared, id: &str) -> Result<(Clip, 
     let (old, keep): (Vec<Clip>, Vec<Clip>) = std::mem::take(&mut m.clips).into_iter().partition(|c| c.kind == "reel");
     m.clips = keep;
     for c in &old {
-        let _ = std::fs::remove_file(lib.file(id, &c.file));
-        if let Some(t) = &c.thumb {
-            let _ = std::fs::remove_file(lib.file(id, t));
-        }
+        lib.remove_clip_files(&m, c);
     }
     m.clips.push(clip.clone());
     lib.save(&m)?;
@@ -317,12 +310,10 @@ pub fn create_vertical(app: &AppHandle, shared: &Shared, id: &str, clip_id: &str
     let cid = library::new_id("vert");
     let file = format!("clips/{cid}.mp4");
     let out = lib.file(id, &file);
-    let badge = vertical_badge(m.kills, m.victory);
+    let job = export::Job { src: &input, cut: None, quality: Quality::from_setting(&settings.clip_quality), vertical: true, badge: vertical_badge(m.kills, m.victory), mobile: None };
     shared.set_step(app, id, "Creando versión vertical", Some(0.0));
     let started = std::time::Instant::now();
-    let result = render_vertical(&ffmpeg, &input, badge.as_ref(), src.end - src.start, &engine::video_options(&settings, 0), &out, &|p| {
-        shared.set_step(app, id, "Creando versión vertical", Some(p))
-    });
+    let result = export::render(&ffmpeg, &job, &engine::video_options(&settings, 0), &out, &|p| shared.set_step(app, id, "Creando versión vertical", Some(p)));
     clear_step(app, shared, id);
     if let Err(e) = result {
         let _ = std::fs::remove_file(&out);
@@ -428,13 +419,16 @@ mod tests {
         let length: f64 = windows.iter().map(|(s, e)| e - s).sum();
         let reel = tmp.0.join("reel.mp4");
         let t = std::time::Instant::now();
-        render_reel(ffmpeg, &lib.file(&m.id, "match.mp4"), &windows, &opts, &reel, &|_| {}).unwrap();
+        render_reel(ffmpeg, &lib.file(&m.id, "match.mp4"), &windows, Quality::Share, &opts, &reel, &|_| {}).unwrap();
         println!("{}: resumen {windows:?} ({length:.1} s) en {:.1} s", m.id, t.elapsed().as_secs_f64());
         let p = library::probe(ffmpeg, &reel).unwrap();
+        println!("resumen: {}x{}, {:.1} MB", p.width, p.height, std::fs::metadata(&reel).unwrap().len() as f64 / 1e6);
         assert!((p.duration - length).abs() < 0.2, "{} vs {length}", p.duration);
+        assert!(export::is_light(&p, std::fs::metadata(&reel).unwrap().len()));
         let vert = tmp.0.join("vert.mp4");
         let t = std::time::Instant::now();
-        render_vertical(ffmpeg, &reel, vertical_badge(3, false).as_ref(), length, &opts, &vert, &|_| {}).unwrap();
+        let job = export::Job { src: &reel, cut: None, quality: Quality::Share, vertical: true, badge: vertical_badge(3, false), mobile: None };
+        export::render(ffmpeg, &job, &opts, &vert, &|_| {}).unwrap();
         println!("vertical en {:.1} s", t.elapsed().as_secs_f64());
         let p = library::probe(ffmpeg, &vert).unwrap();
         assert_eq!((p.width, p.height), (1080, 1920));

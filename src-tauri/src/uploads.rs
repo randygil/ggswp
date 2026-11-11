@@ -361,7 +361,7 @@ pub async fn drive_link(app: &AppHandle, shared: &Shared, match_id: &str, clip_i
     let r = upload(app, shared, match_id, clip_id).await?;
     let (drive, _) = drive_for(shared).await?;
     let url = drive.make_public_link(&r.file_id).await?;
-    Ok(ShareLink { qr_svg: qr_svg(&url)?, url })
+    Ok(ShareLink { qr_svg: qr_svg(&url)?, url, addresses: Vec::new() })
 }
 
 pub fn maybe_auto_upload(app: &AppHandle, shared: &std::sync::Arc<Shared>, match_id: &str) {
