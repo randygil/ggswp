@@ -51,7 +51,7 @@ fn enabled(app: &AppHandle) -> bool {
 /// Cubre el monitor donde está Fortnite (o el principal).
 fn place(w: &WebviewWindow) {
     let outputs = win::list_outputs();
-    let idx = win::fortnite_output_index().unwrap_or(0);
+    let idx = win::game_window().and_then(win::output_index_of).unwrap_or(0);
     if let Some(o) = outputs.iter().find(|o| o.index == idx).or(outputs.first()) {
         let _ = w.set_position(PhysicalPosition::new(o.x, o.y));
         let _ = w.set_size(PhysicalSize::new(o.width as u32, o.height as u32));
@@ -72,7 +72,7 @@ fn show_no_activate(w: &WebviewWindow) {
 
 pub fn toast(app: &AppHandle, text: &str, kind: &str) {
     let _ = app.emit("toast", Toast { text, kind });
-    if !enabled(app) || !win::fortnite_running() {
+    if !enabled(app) || win::game_window().is_none() {
         return;
     }
     let Some(w) = window(app) else { return };

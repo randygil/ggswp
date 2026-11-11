@@ -10,6 +10,7 @@ import { Sidebar } from "./components/Sidebar";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { ToastProvider, useToast } from "./components/Toast";
 import { ContextMenuProvider, useContextMenu } from "./components/ContextMenu";
+import { t, tr } from "./i18n";
 
 export type Route = { name: "gallery" } | { name: "clips" } | { name: "stats" } | { name: "settings" } | { name: "match"; id: string; clipId?: string };
 
@@ -47,12 +48,12 @@ function Shell() {
         setRoute({ name: "match", id: e.payload.id, clipId: e.payload.clip_id ?? undefined }),
       ),
       listen<{ text: string; kind: string }>("toast", (e) =>
-        e.payload.kind === "warn" ? toast.error(e.payload.text) : toast.info(e.payload.text),
+        e.payload.kind === "warn" ? toast.error(tr(e.payload.text)) : toast.info(tr(e.payload.text)),
       ),
       listen<UploadProgress>("upload", (e) => {
         const p = e.payload;
         if (p.done) {
-          if (p.error) toast.error(`Subida fallida: ${p.error}`);
+          if (p.error) toast.error(t("Subida fallida: {error}", { error: tr(p.error) }));
           setUploads((u) => {
             const { [p.key]: _, ...rest } = u;
             return rest;
@@ -66,7 +67,7 @@ function Shell() {
   }, [reload, toast]);
 
   useEffect(() => {
-    if (status?.last_error) toast.error(status.last_error);
+    if (status?.last_error) toast.error(tr(status.last_error));
   }, [status?.last_error, toast]);
 
   return (

@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { locale, t, tr } from "./i18n";
 
 export type MatchStatus = "recording" | "processing" | "ready" | "error";
 
@@ -26,6 +27,8 @@ export interface Clip {
   drive?: DriveRef | null;
   /** Solo está en Drive (la copia local se borró al subirlo). */
   offloaded?: boolean;
+  /** La mejor jugada de la partida, elegida al analizarla. */
+  best?: boolean;
 }
 
 /** Formato de salida de un video: liviano para compartir, mínimo (menos de 16 MB) u original. */
@@ -67,6 +70,69 @@ export interface MobileLayout {
   two_rows: boolean;
   /** Altura de la franja del HUD en el cuadro: 0 = arriba del todo, 1 = abajo del todo. */
   strip: number;
+  /** Piezas sueltas además de la franja (minimapa, contador…). */
+  extras: MobileExtra[];
+}
+
+/** Pieza suelta del modo móvil: un recorte de la grabación puesto donde se quiera. */
+export interface MobileExtra {
+  label: string;
+  src: Region;
+  /** Esquina superior izquierda en el cuadro vertical (0–1). */
+  x: number;
+  y: number;
+  /** Ancho en el cuadro vertical (0–1). */
+  w: number;
+}
+
+export interface MobilePreset {
+  name: string;
+  layout: MobileLayout;
+}
+
+/** Texto sobre el clip, centrado a lo ancho. */
+export interface FxText {
+  text: string;
+  /** Altura del centro del texto (0 = arriba, 1 = abajo). */
+  y: number;
+  /** Tamaño de la letra como fracción del lado corto del cuadro. */
+  size: number;
+  color: "white" | "accent" | "yellow";
+  /** Segundos del clip en que se ve; `to` en 0 = hasta el final. */
+  from: number;
+  to: number;
+}
+
+/** Tramo con cámara lenta y/o acercamiento, en segundos desde el inicio del clip. */
+export interface FxMoment {
+  start: number;
+  end: number;
+  speed: number;
+  zoom: number;
+}
+
+/** Efectos del editor al exportar. */
+export interface Fx {
+  texts?: FxText[];
+  moment?: FxMoment | null;
+  music?: { path: string; volume: number } | null;
+  /** Fuentes de audio a incluir (game, other, mic); sin esto, las de Ajustes. */
+  tracks?: string[] | null;
+  volume?: number | null;
+}
+
+/** Nombre visible de cada fuente de audio de una grabación. */
+export const TRACK_LABEL: Record<string, string> = {
+  game: "Juego",
+  system: "Juego y sistema",
+  other: "Otras apps",
+  mic: "Micrófono",
+};
+
+/** Otro juego que se graba mientras está abierto. */
+export interface GameProfile {
+  name: string;
+  exe: string;
 }
 
 export type Firewall = "allowed" | "blocked" | "unknown";
@@ -81,6 +147,10 @@ export interface Match {
   mode?: string | null;
   playlist?: string | null;
   map?: string | null;
+  /** Juego grabado cuando no es Fortnite. */
+  game?: string | null;
+  /** Pistas de audio del video (`mix` y cada fuente); vacío si es una sola. */
+  audio_tracks?: string[];
   duration_s: number;
   width: number;
   height: number;
@@ -148,6 +218,8 @@ export interface Status {
   /** Paso en curso de cada partida que se está procesando (por id). */
   steps: Record<string, Step>;
   fortnite_running: boolean;
+  /** Otro juego de la lista de Ajustes que está abierto. */
+  game?: string | null;
   game_state: "idle" | "lobby" | "loading" | "in_match";
   recording?: { match_id: string; started_at: string; manual: boolean } | null;
   processing: string[];
@@ -192,6 +264,11 @@ export interface Settings {
   system_audio: boolean;
   microphone: boolean;
   mic_volume: number;
+  /** Graba el audio del juego en una pista aparte del resto. */
+  separate_audio: boolean;
+  clip_other_audio: boolean;
+  clip_mic_audio: boolean;
+  games: GameProfile[];
   auto_clips: boolean;
   clip_before_s: number;
   clip_after_s: number;
@@ -199,6 +276,9 @@ export interface Settings {
   /** Formato de los clips que se crean: "share" (1080p liviano) u "original". */
   clip_quality: "share" | "original";
   mobile_layout: MobileLayout;
+  mobile_presets: MobilePreset[];
+  /** Versión vertical automática de la mejor jugada: "off" | "vertical" | "mobile". */
+  best_play: "off" | "vertical" | "mobile";
   ffmpeg_path: string | null;
   share_port: number;
   launch_at_startup: boolean;
@@ -215,6 +295,8 @@ export interface Settings {
   /** Días antes de borrar de la PC lo que ya está en Drive (0 = nunca). */
   local_days: number;
   detect_chests: boolean;
+  /** Idioma de la interfaz. */
+  language: "auto" | "es" | "en";
 }
 
 export interface Monitor {
@@ -236,7 +318,12 @@ export interface ShareLink {
 export interface SetupCheck {
   ffmpeg: string | null;
   ffmpeg_path: string;
+  /** El codificador elegido funciona en esta PC. */
   nvenc: boolean;
+  /** Codificadores que funcionan en esta PC. */
+  encoders: string[];
+  /** El que se usa de verdad (otro, si el elegido no funciona aquí). */
+  encoder_in_use: string;
   fortnite_log: boolean;
   replays_enabled: boolean | null;
 }
@@ -267,8 +354,15 @@ export const api = {
     invoke<void>("update_match", { id, title: patch.title ?? null, keep: patch.keep ?? null }),
   deleteClip: (id: string, clipId: string) => invoke<void>("delete_clip", { id, clipId }),
   /** Exporta un tramo del video de la partida o, con `source`, de uno de sus clips. */
-  exportClip: (id: string, o: { source?: string; start: number; end: number; title: string; quality: Quality; frame: Frame }) =>
-    invoke<Clip>("export_clip", { id, ...o, source: o.source ?? null }),
+  exportClip: (id: string, o: { source?: string; start: number; end: number; title: string; quality: Quality; frame: Frame; fx?: Fx }) =>
+    invoke<Clip>("export_clip", { id, ...o, source: o.source ?? null, fx: o.fx ?? null }),
+  /** Une varios clips de la partida, en ese orden, en un clip nuevo. */
+  joinClips: (id: string, clipIds: string[], title = "") => invoke<Clip>("join_clips", { id, clipIds, title }),
+  /** Un video con lo mejor de los últimos 7 días; devuelve el id de la entrada nueva. */
+  createWeekly: () => invoke<string>("create_weekly"),
+  setMobilePresets: (presets: MobilePreset[]) => invoke<void>("set_mobile_presets", { presets }),
+  /** Programas abiertos, para agregar uno como juego a grabar. */
+  openApps: () => invoke<{ title: string; exe: string }[]>("list_open_apps"),
   /** Guarda las zonas y el encuadre del modo móvil que se ajustan en el editor. */
   setMobileLayout: (layout: MobileLayout) => invoke<void>("set_mobile_layout", { layout }),
   /** Pasa al formato liviano los clips que siguen a la calidad de grabación. */
@@ -326,12 +420,13 @@ export function fmtTime(s: number) {
 
 export function fmtDate(iso: string) {
   const d = new Date(iso);
-  return d.toLocaleString("es", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleString(locale(), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 export function fmtSize(bytes: number) {
-  if (bytes > 1e9) return `${(bytes / 1e9).toFixed(1).replace(".", ",")} GB`;
-  if (bytes < 9.95e6) return `${(bytes / 1e6).toFixed(1).replace(".", ",")} MB`;
+  const dec = (n: number) => (locale() === "en" ? n.toFixed(1) : n.toFixed(1).replace(".", ","));
+  if (bytes > 1e9) return `${dec(bytes / 1e9)} GB`;
+  if (bytes < 9.95e6) return `${dec(bytes / 1e6)} MB`;
   return `${Math.round(bytes / 1e6)} MB`;
 }
 
@@ -387,12 +482,12 @@ export function longestShot(m: Pick<Match, "events">) {
 }
 
 export function clipTag(kind: string) {
-  return kind === "hotkey" ? "Atajo" : kind === "manual" || kind === "cut" ? "Editor" : kind === "reel" ? "Resumen" : kind === "vertical" ? "Vertical" : "Auto";
+  return kind === "hotkey" ? t("Atajo") : kind === "manual" || kind === "cut" ? t("Editor") : kind === "join" ? t("Unión") : kind === "reel" ? t("Resumen") : kind === "vertical" ? t("Vertical") : t("Auto");
 }
 
 /** El resumen, las versiones verticales y sus recortes no son un tramo de la partida: no van en la línea de tiempo. */
 export function onTimeline(c: Pick<Clip, "kind">) {
-  return c.kind !== "reel" && c.kind !== "vertical" && c.kind !== "cut";
+  return c.kind !== "reel" && c.kind !== "vertical" && c.kind !== "cut" && c.kind !== "join";
 }
 
 /** Momento de la caída del jugador (para "Eliminado 14:03"). */
@@ -415,7 +510,7 @@ export function daysLeft(m: Pick<Match, "keep" | "created_at" | "status">, reten
 }
 
 export function expiryText(days: number) {
-  return days <= 0 ? "Vence hoy" : days === 1 ? "Vence mañana" : `Vence en ${days} días`;
+  return days <= 0 ? t("Vence hoy") : days === 1 ? t("Vence mañana") : t("Vence en {days} días", { days });
 }
 
 /** "Alt+F10" → "Alt + F10", "KeyG" → "G" */
@@ -427,5 +522,5 @@ export function prettyHotkey(h: string) {
 }
 
 export function errText(e: unknown) {
-  return typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e);
+  return tr(typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));
 }

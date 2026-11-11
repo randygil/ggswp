@@ -1,6 +1,6 @@
 [package]
 name = "ggswp"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 description = "Grabador automatico de partidas de Fortnite"
 
@@ -45,6 +45,7 @@ windows-collections = "0.3"
 version = "0.62"
 features = [
   "Win32_Foundation",
+  "Win32_Globalization",
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",
   "Win32_Graphics_Gdi",

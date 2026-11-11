@@ -1,4 +1,5 @@
-//! Captura de audio WASAPI: loopback del dispositivo de salida (lo que escuchas) o micrófono.
+//! Captura de audio WASAPI: loopback del dispositivo de salida (lo que escuchas), micrófono
+//! o loopback de un solo proceso (el juego, o todo menos el juego).
 //!
 //! Cada paquete trae su timestamp QPC; se coloca en su posición exacta respecto de `t0`
 //! y los huecos se rellenan con silencio (el loopback no entrega paquetes cuando no suena
@@ -11,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 use anyhow::{Context, Result, anyhow};
-use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat, initialize_mta};
+use wasapi::{AudioClient, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat, initialize_mta};
 
 use super::win::qpc_100ns;
 
@@ -24,6 +25,10 @@ const SLACK_FRAMES: i64 = (RATE / 100) as i64;
 pub enum Source {
     SystemLoopback,
     Microphone,
+    /// Solo lo que suena desde ese proceso y sus hijos (Windows 10 2004 o superior).
+    Process(u32),
+    /// Todo lo que suena menos ese proceso y sus hijos.
+    AllBut(u32),
 }
 
 pub struct AudioCapture {
@@ -64,20 +69,20 @@ impl AudioCapture {
 
 fn run(source: Source, path: &PathBuf, t0: u64, stop: &AtomicBool, ready: &std::sync::mpsc::Sender<Result<()>>) -> Result<u64> {
     initialize_mta().ok().context("COM")?;
-    let enumerator = DeviceEnumerator::new()?;
-    let device = match source {
-        Source::SystemLoopback => enumerator.get_default_device(Direction::Render)?,
-        Source::Microphone => enumerator.get_default_device(Direction::Capture)?,
-    };
-    let mut client = device.get_iaudioclient()?;
     let format = WaveFormat::new(16, 16, SampleType::Int, RATE as usize, CHANNELS as usize, None);
-    let (default_period, _) = client.get_device_period()?;
-    client.initialize_client(
-        &format,
-        Direction::Capture,
-        StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: default_period * 4 },
-        None,
-    )?;
+    let device = |d: Direction| -> Result<(AudioClient, i64)> {
+        let client = DeviceEnumerator::new()?.get_default_device(d)?.get_iaudioclient()?;
+        let (default_period, _) = client.get_device_period()?;
+        Ok((client, default_period * 4))
+    };
+    // El loopback de proceso no tiene dispositivo: el tamaño del búfer lo decide Windows.
+    let (mut client, buffer_duration_hns) = match source {
+        Source::SystemLoopback => device(Direction::Render)?,
+        Source::Microphone => device(Direction::Capture)?,
+        Source::Process(pid) => (AudioClient::new_application_loopback_client(pid, true)?, 0),
+        Source::AllBut(pid) => (AudioClient::new_application_loopback_client(pid, false)?, 0),
+    };
+    client.initialize_client(&format, Direction::Capture, StreamMode::EventsShared { autoconvert: true, buffer_duration_hns }, None)?;
     let event = client.set_get_eventhandle()?;
     let capture = client.get_audiocaptureclient()?;
 

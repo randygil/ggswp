@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, fmtClock, pad2, prettyHotkey, type Settings, type Status, type UploadProgress } from "../api";
 import type { Route } from "../App";
+import { t, tr } from "../i18n";
 import { Icon } from "./Icon";
 
 const GAME_STATE: Record<string, string> = {
@@ -19,7 +20,8 @@ function Elapsed({ since }: { since: string }) {
   return <>{fmtClock((now - new Date(since).getTime()) / 1000)}</>;
 }
 
-const ENCODER: Record<string, string> = { h264_nvenc: "H.264", hevc_nvenc: "HEVC", av1_nvenc: "AV1" };
+/** "h264_amf" → "H.264"; "libx264" → "H.264". */
+const encoderName = (e: string) => (e.startsWith("hevc") ? "HEVC" : e.startsWith("av1") ? "AV1" : "H.264");
 
 export function Sidebar(props: {
   route: Route;
@@ -41,7 +43,15 @@ export function Sidebar(props: {
   );
   const uploadList = Object.values(uploads);
   const hk = settings?.hotkeys;
-  const word = rec ? "Grabando" : status?.game_state === "in_match" ? "En partida" : status?.fortnite_running ? "Esperando partida" : "Fortnite cerrado";
+  const word = rec
+    ? t("Grabando")
+    : status?.game_state === "in_match"
+      ? t("En partida")
+      : status?.fortnite_running
+        ? t("Esperando partida")
+        : status?.game
+          ? t("{game} abierto", { game: status.game })
+          : t("Fortnite cerrado");
 
   return (
     <aside className="rail">
@@ -51,15 +61,15 @@ export function Sidebar(props: {
         <span className="brand-ver">v0.1</span>
       </div>
 
-      <nav className="nav" aria-label="Secciones">
-        {nav("gallery", "Partidas", "film", counts.matches)}
-        {nav("clips", "Clips", "scissors", counts.clips)}
-        {nav("stats", "Estadísticas", "chart")}
-        {nav("settings", "Ajustes", "sliders")}
+      <nav className="nav" aria-label={t("Secciones")}>
+        {nav("gallery", t("Partidas"), "film", counts.matches)}
+        {nav("clips", t("Clips"), "scissors", counts.clips)}
+        {nav("stats", t("Estadísticas"), "chart")}
+        {nav("settings", t("Ajustes"), "sliders")}
       </nav>
 
-      <section className={`status ${rec ? "rec" : ""}`} aria-label="Estado de captura" aria-live="polite">
-        <span className="label">Estado</span>
+      <section className={`status ${rec ? "rec" : ""}`} aria-label={t("Estado de captura")} aria-live="polite">
+        <span className="label">{t("Estado")}</span>
         <div className="status-head">
           <span className={`dot ${rec ? "rec" : status?.fortnite_running ? "on" : ""}`} />
           <span className="status-word">{word}</span>
@@ -67,28 +77,28 @@ export function Sidebar(props: {
         <dl className="kv">
           {rec ? (
             <>
-              <dt>Tiempo</dt>
+              <dt>{t("Tiempo")}</dt>
               <dd>
                 <Elapsed since={rec.started_at} />
               </dd>
-              <dt>Tipo</dt>
-              <dd>{rec.manual ? "manual" : "partida"}</dd>
+              <dt>{t("Tipo")}</dt>
+              <dd>{rec.manual ? t("manual") : status?.game ? status.game : t("partida")}</dd>
             </>
           ) : (
             <>
               <dt>Fortnite</dt>
-              <dd>{status?.fortnite_running ? GAME_STATE[status.game_state].toLowerCase() : "cerrado"}</dd>
+              <dd>{status?.fortnite_running ? t(GAME_STATE[status.game_state]).toLowerCase() : t("cerrado")}</dd>
             </>
           )}
           {settings && (
             <>
-              <dt>Video</dt>
+              <dt>{t("Video")}</dt>
               <dd>
-                {settings.fps} fps · {ENCODER[settings.encoder] ?? settings.encoder}
+                {settings.fps} fps · {encoderName(settings.encoder)}
               </dd>
-              <dt>Búfer</dt>
+              <dt>{t("Búfer")}</dt>
               <dd className={status?.buffer_active ? "accent" : ""}>
-                {!settings.replay_buffer ? "apagado" : status?.buffer_active ? `${settings.clip_seconds} s listo` : "en espera"}
+                {!settings.replay_buffer ? t("apagado") : status?.buffer_active ? t("{n} s listo", { n: settings.clip_seconds }) : t("en espera")}
               </dd>
             </>
           )}
@@ -97,7 +107,7 @@ export function Sidebar(props: {
           Object.entries(status.steps ?? {}).map(([id, st]) => (
             <div key={id} className="upload-row" title={id}>
               <span>
-                {st.label}
+                {tr(st.label)}
                 {st.pct != null && ` · ${Math.round(st.pct)} %`}
               </span>
               <div className="meter">
@@ -112,20 +122,20 @@ export function Sidebar(props: {
         )}
         {rec && (
           <button className="btn danger sm full" onClick={() => api.stopRecording()}>
-            <Icon name="stop" size={14} filled /> Detener
+            <Icon name="stop" size={14} filled /> {t("Detener")}
           </button>
         )}
       </section>
 
       {hk && (
-        <section className="keys" aria-label="Atajos">
-          <span className="label">Atajos</span>
+        <section className="keys" aria-label={t("Atajos")}>
+          <span className="label">{t("Atajos")}</span>
           {(
             [
-              ["Guardar " + (settings?.clip_seconds ?? 30) + " s", hk.save_clip],
-              ["Marcar momento", hk.bookmark],
-              ["Grabar / detener", hk.toggle_recording],
-              ["Menú en el juego", hk.highlights_menu],
+              [t("Guardar {n} s", { n: settings?.clip_seconds ?? 30 }), hk.save_clip],
+              [t("Marcar momento"), hk.bookmark],
+              [t("Grabar / detener"), hk.toggle_recording],
+              [t("Menú en el juego"), hk.highlights_menu],
             ] as const
           )
             .filter(([, k]) => k)
@@ -144,8 +154,8 @@ export function Sidebar(props: {
               <div key={u.key} className="upload-row">
                 <span>
                   {u.waiting
-                    ? "Drive en pausa mientras juegas"
-                    : `${u.compressing ? "Comprimiendo para Drive" : u.download ? "Bajando de Drive" : "Subiendo a Drive"} · ${Math.round((u.sent / Math.max(1, u.total)) * 100)} %`}
+                    ? t("Drive en pausa mientras juegas")
+                    : `${u.compressing ? t("Comprimiendo para Drive") : u.download ? t("Bajando de Drive") : t("Subiendo a Drive")} · ${Math.round((u.sent / Math.max(1, u.total)) * 100)} %`}
                 </span>
                 <div className="meter">
                   <div style={{ width: `${u.total ? (u.sent / u.total) * 100 : 0}%` }} />
@@ -157,12 +167,12 @@ export function Sidebar(props: {
         <div className="rail-drive">
           <Icon name="cloud" />
           {settings?.drive.refresh_token ? (
-            <span title={settings.drive.account_email ?? undefined}>Drive · {settings.drive.account_email ?? "conectado"}</span>
+            <span title={settings.drive.account_email ?? undefined}>Drive · {settings.drive.account_email ?? t("conectado")}</span>
           ) : (
             <>
-              <span title="Google Drive sin conectar">Google Drive</span>
+              <span title={t("Google Drive sin conectar")}>Google Drive</span>
               <button className="link-btn" onClick={() => onNavigate({ name: "settings" })}>
-                Conectar
+                {t("Conectar")}
               </button>
             </>
           )}

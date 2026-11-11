@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { prettyHotkey } from "../api";
+import { t } from "../i18n";
 
 const MODIFIER_CODES = new Set(["ControlLeft", "ControlRight", "AltLeft", "AltRight", "ShiftLeft", "ShiftRight", "MetaLeft", "MetaRight"]);
 
@@ -33,11 +34,11 @@ export function HotkeyInput({ value, onChange }: { value: string; onChange: (v: 
           }
         }}
       >
-        {listening ? "Presiona la combinación…" : value ? prettyHotkey(value) : "Sin asignar"}
+        {listening ? t("Presiona la combinación…") : value ? prettyHotkey(value) : t("Sin asignar")}
       </button>
       {value && (
         <button type="button" className="btn ghost sm" onClick={() => onChange("")}>
-          Quitar
+          {t("Quitar")}
         </button>
       )}
     </span>

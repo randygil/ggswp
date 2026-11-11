@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import type { MobileLayout, Region } from "../api";
+import type { FxText, MobileExtra, MobileLayout, Region } from "../api";
+import { t } from "../i18n";
 
 /** HUD de Fortnite a escala 100 % en 16:9 (igual que `MobileLayout::default` en Rust). */
 export const DEFAULT_MOBILE_LAYOUT: MobileLayout = {
@@ -8,7 +9,16 @@ export const DEFAULT_MOBILE_LAYOUT: MobileLayout = {
   focus: 0.5,
   two_rows: false,
   strip: 0.93,
+  extras: [],
 };
+
+/** Minimapa de Fortnite a escala 100 % (arriba a la derecha), puesto arriba en el cuadro. */
+export const MINIMAP_EXTRA: MobileExtra = { label: "Minimapa", src: { x: 0.846, y: 0.018, w: 0.142, h: 0.252 }, x: 0.66, y: 0.03, w: 0.31 };
+/** Zona libre: empieza en el centro para ajustarla a mano. */
+export const FREE_EXTRA: MobileExtra = { label: "Zona", src: { x: 0.42, y: 0.42, w: 0.16, h: 0.16 }, x: 0.04, y: 0.03, w: 0.3 };
+
+export const TEXT_COLORS: Record<FxText["color"], string> = { white: "#ffffff", accent: "#39FF88", yellow: "#FFD23F" };
+export const TEXT_FONT = 'Bahnschrift, "DIN Alternate", "Arial Narrow", sans-serif';
 
 const OUT_W = 1080;
 const OUT_H = 1920;
@@ -19,7 +29,7 @@ const BAND_PAD = 14;
 const MAX_ROW_H = 220;
 const TWO_ROWS_W = 760;
 
-type Box = { x: number; y: number; w: number; h: number };
+export type Box = { x: number; y: number; w: number; h: number };
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
 
 /**
@@ -54,11 +64,24 @@ export function mobileGeometry(l: MobileLayout, w: number, h: number) {
   const y = EDGE + clamp(l.strip, 0, 1) * (OUT_H - 2 * EDGE - bandH);
   const health: Box = { ...hs, x: hx, y };
   const weapons: Box = { ...ws, x: wx, y: y + wdy };
-  return { game: { x: gx, y: 0, w: gw, h }, travel: OUT_H - 2 * EDGE - bandH, band: { y: y - BAND_PAD, h: bandH + 2 * BAND_PAD }, health: { crop: hc, to: health }, weapons: { crop: wc, to: weapons } };
+  const extras = (l.extras ?? []).map((e) => {
+    const c = crop(e.src);
+    const ew = clamp(e.w, 0.05, 1) * OUT_W;
+    const eh = Math.min(ew / (c.w / c.h), OUT_H);
+    return { crop: c, to: { x: Math.min(Math.max(0, e.x) * OUT_W, OUT_W - ew), y: Math.min(Math.max(0, e.y) * OUT_H, OUT_H - eh), w: ew, h: eh } };
+  });
+  return {
+    game: { x: gx, y: 0, w: gw, h },
+    travel: OUT_H - 2 * EDGE - bandH,
+    band: { y: y - BAND_PAD, h: bandH + 2 * BAND_PAD },
+    health: { crop: hc, to: health },
+    weapons: { crop: wc, to: weapons },
+    extras,
+  };
 }
 
 /** Rectángulo que ocupa la imagen dentro del elemento <video> (que puede tener bandas). */
-function useContentBox(video: RefObject<HTMLVideoElement | null>) {
+export function useContentBox(video: RefObject<HTMLVideoElement | null>) {
   const [box, setBox] = useState<Box | null>(null);
   useEffect(() => {
     const v = video.current;
@@ -83,6 +106,12 @@ function useContentBox(video: RefObject<HTMLVideoElement | null>) {
 
 const pct = (v: number) => `${v * 100}%`;
 
+/** Las piezas sueltas guardan su nombre en español ("Minimapa", "Zona 2"); se traduce al mostrarlo. */
+const extraLabel = (label: string) => {
+  const zone = /^Zona (\d+)$/.exec(label);
+  return zone ? t("Zona {n}", { n: zone[1] }) : t(label);
+};
+
 /**
  * Zonas del modo móvil sobre el video: la salud y las armas se mueven y se estiran, y el
  * encuadre del juego se corre a los lados. `onCommit` avisa al soltar.
@@ -90,7 +119,8 @@ const pct = (v: number) => `${v * 100}%`;
 export function MobileOverlay(props: { video: RefObject<HTMLVideoElement | null>; layout: MobileLayout; onChange: (l: MobileLayout) => void; onCommit: (l: MobileLayout) => void }) {
   const { video, layout, onChange, onCommit } = props;
   const box = useContentBox(video);
-  const drag = useRef<{ what: "health" | "weapons" | "focus"; resize: boolean; x: number; y: number; start: MobileLayout } | null>(null);
+  type What = "health" | "weapons" | "focus" | number;
+  const drag = useRef<{ what: What; resize: boolean; x: number; y: number; start: MobileLayout } | null>(null);
   // Último valor emitido: al soltar se guarda este, aunque React aún no haya vuelto a dibujar.
   const latest = useRef(layout);
   const emit = (l: MobileLayout) => {
@@ -99,7 +129,7 @@ export function MobileOverlay(props: { video: RefObject<HTMLVideoElement | null>
   };
   if (!box) return null;
 
-  const begin = (e: React.PointerEvent, what: "health" | "weapons" | "focus", resize = false) => {
+  const begin = (e: React.PointerEvent, what: What, resize = false) => {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
@@ -116,11 +146,13 @@ export function MobileOverlay(props: { video: RefObject<HTMLVideoElement | null>
       emit({ ...d.start, focus: clamp(d.start.focus + dx, half, 1 - half) });
       return;
     }
-    const r = d.start[d.what];
+    const r = typeof d.what === "number" ? d.start.extras[d.what].src : d.start[d.what];
     const next: Region = d.resize
       ? { ...r, w: clamp(r.w + dx, 0.04, 1 - r.x), h: clamp(r.h + dy, 0.03, 1 - r.y) }
       : { ...r, x: clamp(r.x + dx, 0, 1 - r.w), y: clamp(r.y + dy, 0, 1 - r.h) };
-    emit({ ...d.start, [d.what]: next });
+    const what = d.what;
+    if (typeof what === "number") emit({ ...d.start, extras: d.start.extras.map((x, i) => (i === what ? { ...x, src: next } : x)) });
+    else emit({ ...d.start, [what]: next });
   };
   const end = () => {
     if (drag.current) onCommit(latest.current);
@@ -130,21 +162,36 @@ export function MobileOverlay(props: { video: RefObject<HTMLVideoElement | null>
   const v = video.current!;
   const gw = (v.videoHeight * 9) / 16 / v.videoWidth;
   const gx = clamp(layout.focus - gw / 2, 0, 1 - gw);
-  const region = (what: "health" | "weapons", label: string) => {
-    const r = layout[what];
+  const region = (what: "health" | "weapons" | number, label: string) => {
+    const r = typeof what === "number" ? layout.extras[what].src : layout[what];
     return (
       <div
-        className="mf-region"
+        key={what}
+        className={`mf-region ${typeof what === "number" ? "extra" : ""}`}
         style={{ left: pct(r.x), top: pct(r.y), width: pct(r.w), height: pct(r.h) }}
         onPointerDown={(e) => begin(e, what)}
         onPointerMove={move}
         onPointerUp={end}
         onClick={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}
-        title={`Zona de ${label.toLowerCase()}: arrástrala para moverla`}
+        title={t("Zona de {label}: arrástrala para moverla", { label: label.toLowerCase() })}
       >
         <span className="mf-label">{label}</span>
-        <span className="mf-grip" onPointerDown={(e) => begin(e, what, true)} onPointerMove={move} onPointerUp={end} title="Arrastra para cambiar el tamaño" />
+        {typeof what === "number" && (
+          <button
+            className="mf-remove"
+            title={t("Quitar la zona {label}", { label })}
+            aria-label={t("Quitar la zona {label}", { label })}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCommit({ ...layout, extras: layout.extras.filter((_, i) => i !== what) });
+            }}
+          >
+            ×
+          </button>
+        )}
+        <span className="mf-grip" onPointerDown={(e) => begin(e, what, true)} onPointerMove={move} onPointerUp={end} title={t("Arrastra para cambiar el tamaño")} />
       </div>
     );
   };
@@ -161,13 +208,14 @@ export function MobileOverlay(props: { video: RefObject<HTMLVideoElement | null>
           onPointerUp={end}
           onClick={(e) => e.stopPropagation()}
           onDoubleClick={(e) => e.stopPropagation()}
-          title="Arrastra para correr el encuadre del juego"
+          title={t("Arrastra para correr el encuadre del juego")}
         >
-          ↔ Encuadre
+          ↔ {t("Encuadre")}
         </span>
       </div>
-      {region("health", "Salud")}
-      {region("weapons", "Armas")}
+      {region("health", t("Salud"))}
+      {region("weapons", t("Armas"))}
+      {(layout.extras ?? []).map((e, i) => region(i, extraLabel(e.label)))}
     </div>
   );
 }
@@ -176,12 +224,23 @@ export function MobileOverlay(props: { video: RefObject<HTMLVideoElement | null>
  * Vista previa en vivo del cuadro vertical, dibujada con los mismos recortes que el render.
  * Arrastrando hacia arriba o abajo se mueve la franja del HUD.
  */
-export function MobilePreview(props: { video: RefObject<HTMLVideoElement | null>; layout: MobileLayout; onChange: (l: MobileLayout) => void; onCommit: (l: MobileLayout) => void }) {
+export function MobilePreview(props: {
+  video: RefObject<HTMLVideoElement | null>;
+  layout: MobileLayout;
+  texts?: FxText[];
+  /** Acercamiento del juego en este momento (1 = sin zoom). */
+  zoom?: number;
+  onChange: (l: MobileLayout) => void;
+  onCommit: (l: MobileLayout) => void;
+}) {
   const { video, layout, onChange, onCommit } = props;
   const canvas = useRef<HTMLCanvasElement>(null);
-  const drag = useRef<{ y: number; start: MobileLayout; last: MobileLayout } | null>(null);
+  // `piece` es la pieza suelta que se arrastra (o se estira, con `resize`); sin ella, la franja.
+  const drag = useRef<{ x: number; y: number; start: MobileLayout; last: MobileLayout; piece: number | null; resize: boolean } | null>(null);
   const latest = useRef(layout);
   latest.current = layout;
+  const extra = useRef({ texts: props.texts ?? [], zoom: props.zoom ?? 1 });
+  extra.current = { texts: props.texts ?? [], zoom: props.zoom ?? 1 };
   const [height, setHeight] = useState(0);
 
   // Tan alta como el video que tiene al lado.
@@ -203,10 +262,26 @@ export function MobilePreview(props: { video: RefObject<HTMLVideoElement | null>
       if (!v || !c || !ctx || v.readyState < 2 || !v.videoWidth) return;
       const g = mobileGeometry(latest.current, v.videoWidth, v.videoHeight);
       const k = c.width / OUT_W;
-      ctx.drawImage(v, g.game.x, g.game.y, g.game.w, g.game.h, 0, 0, c.width, c.height);
+      const z = Math.max(1, extra.current.zoom);
+      const [zw, zh] = [g.game.w / z, g.game.h / z];
+      ctx.drawImage(v, g.game.x + (g.game.w - zw) / 2, g.game.y + (g.game.h - zh) / 2, zw, zh, 0, 0, c.width, c.height);
       ctx.fillStyle = "rgb(0 0 0 / 0.45)";
       ctx.fillRect(0, g.band.y * k, c.width, g.band.h * k);
-      for (const p of [g.health, g.weapons]) ctx.drawImage(v, p.crop.x, p.crop.y, p.crop.w, p.crop.h, p.to.x * k, p.to.y * k, p.to.w * k, p.to.h * k);
+      for (const p of [g.health, g.weapons, ...g.extras]) ctx.drawImage(v, p.crop.x, p.crop.y, p.crop.w, p.crop.h, p.to.x * k, p.to.y * k, p.to.w * k, p.to.h * k);
+      // El texto, igual que en el render: centrado, con borde oscuro.
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      for (const t of extra.current.texts) {
+        if (!t.text.trim()) continue;
+        const px = OUT_W * t.size * k;
+        ctx.font = `600 ${px}px ${TEXT_FONT}`;
+        ctx.lineWidth = Math.max(2, px * 0.14);
+        ctx.strokeStyle = "rgb(0 0 0 / 0.9)";
+        ctx.strokeText(t.text, c.width / 2, t.y * c.height);
+        ctx.fillStyle = TEXT_COLORS[t.color] ?? "#fff";
+        ctx.fillText(t.text, c.width / 2, t.y * c.height);
+      }
     };
     draw();
     return () => cancelAnimationFrame(raf);
@@ -220,20 +295,41 @@ export function MobilePreview(props: { video: RefObject<HTMLVideoElement | null>
       height={OUT_H / 2}
       style={{ height, width: (height * 9) / 16 }}
       role="img"
-      aria-label="Vista previa del clip en modo móvil"
-      title="Arrastra hacia arriba o abajo para mover la franja de la salud y las armas"
+      aria-label={t("Vista previa del clip en modo móvil")}
+      title={t("Arrastra para mover la franja de la salud y las armas, o una zona suelta (su esquina cambia el tamaño)")}
       onPointerDown={(e) => {
-        if (e.button !== 0) return;
+        const v = video.current;
+        if (e.button !== 0 || !v?.videoWidth || !height) return;
         e.currentTarget.setPointerCapture(e.pointerId);
-        drag.current = { y: e.clientY, start: layout, last: layout };
+        // ¿Sobre una pieza suelta? La de más arriba gana; cerca de su esquina, se estira.
+        const r = e.currentTarget.getBoundingClientRect();
+        const [px, py] = [((e.clientX - r.left) / r.width) * OUT_W, ((e.clientY - r.top) / r.height) * OUT_H];
+        const boxes = mobileGeometry(layout, v.videoWidth, v.videoHeight).extras.map((p) => p.to);
+        let piece: number | null = null;
+        for (let i = boxes.length - 1; i >= 0 && piece === null; i--) {
+          const b = boxes[i];
+          if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) piece = i;
+        }
+        const b = piece === null ? null : boxes[piece];
+        const resize = !!b && px > b.x + b.w - 60 && py > b.y + b.h - 60;
+        drag.current = { x: e.clientX, y: e.clientY, start: layout, last: layout, piece, resize };
       }}
       onPointerMove={(e) => {
         const d = drag.current;
         const v = video.current;
         if (!d || !v?.videoWidth || !height) return;
-        // Píxeles de pantalla → píxeles del cuadro → fracción del recorrido de la franja.
-        const travel = mobileGeometry(d.start, v.videoWidth, v.videoHeight).travel;
-        d.last = { ...d.start, strip: clamp(d.start.strip + (((e.clientY - d.y) / height) * OUT_H) / travel, 0, 1) };
+        const [dx, dy] = [(e.clientX - d.x) / ((height * 9) / 16), (e.clientY - d.y) / height];
+        if (d.piece !== null) {
+          const i = d.piece;
+          d.last = {
+            ...d.start,
+            extras: d.start.extras.map((x, n) => (n !== i ? x : d.resize ? { ...x, w: clamp(x.w + dx, 0.08, 1) } : { ...x, x: clamp(x.x + dx, 0, 1 - x.w), y: clamp(x.y + dy, 0, 0.95) })),
+          };
+        } else {
+          // Píxeles de pantalla → píxeles del cuadro → fracción del recorrido de la franja.
+          const travel = mobileGeometry(d.start, v.videoWidth, v.videoHeight).travel;
+          d.last = { ...d.start, strip: clamp(d.start.strip + (dy * OUT_H) / travel, 0, 1) };
+        }
         onChange(d.last);
       }}
       onPointerUp={() => {

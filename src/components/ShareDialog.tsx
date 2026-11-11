@@ -4,6 +4,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { api, errText, fmtSize, QUALITY_LABEL, type Clip, type Firewall, type Match, type Quality, type ShareFile, type ShareLink } from "../api";
 import { Icon } from "./Icon";
 import { useToast } from "./Toast";
+import { t, tr } from "../i18n";
 
 type Tab = "file" | "wifi" | "drive";
 
@@ -105,9 +106,9 @@ export function ShareDialog({ match, clip, onClose }: { match: Match; clip?: Cli
   };
 
   const saveAs = async () => {
-    const name = (clip ? `${match.title} - ${clip.title}` : match.title).replace(/[\\/:*?"<>|]/g, "-");
-    const dest = await save({ defaultPath: `${name}.mp4`, filters: [{ name: "Video MP4", extensions: ["mp4"] }] });
-    if (dest) await act("save", "Video guardado", () => api.shareSave(match.id, clip?.id, quality, dest));
+    const name = (clip ? `${tr(match.title)} - ${tr(clip.title)}` : tr(match.title)).replace(/[\\/:*?"<>|]/g, "-");
+    const dest = await save({ defaultPath: `${name}.mp4`, filters: [{ name: t("Video MP4"), extensions: ["mp4"] }] });
+    if (dest) await act("save", t("Video guardado"), () => api.shareSave(match.id, clip?.id, quality, dest));
   };
 
   const pickAddress = (ip: string) =>
@@ -148,7 +149,7 @@ export function ShareDialog({ match, clip, onClose }: { match: Match; clip?: Cli
   const waiting = (
     <div className="share-wait">
       <span className="spinner" />
-      {preparing ? `Comprimiendo el video… ${Math.round(pct)} %` : "Preparando…"}
+      {preparing ? t("Comprimiendo el video… {pct} %", { pct: Math.round(pct) }) : t("Preparando…")}
     </div>
   );
 
@@ -156,25 +157,25 @@ export function ShareDialog({ match, clip, onClose }: { match: Match; clip?: Cli
     <div className="modal-back" onClick={onClose}>
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby="share-title" onClick={(e) => e.stopPropagation()}>
         <header>
-          <h2 id="share-title">Compartir</h2>
-          <button className="icon-btn" onClick={onClose} aria-label="Cerrar">
+          <h2 id="share-title">{t("Compartir")}</h2>
+          <button className="icon-btn" onClick={onClose} aria-label={t("Cerrar")}>
             <Icon name="x" />
           </button>
         </header>
-        <p className="muted">{clip ? clip.title : `Partida completa · ${match.title}`}</p>
+        <p className="muted">{clip ? tr(clip.title) : t("Partida completa · {title}", { title: tr(match.title) })}</p>
 
         {!onlyDrive && (
           <div className="share-format">
-            <div className="chips" role="group" aria-label="Formato del video">
+            <div className="chips" role="group" aria-label={t("Formato del video")}>
               {QUALITIES.map((q) => (
                 <button key={q} className={`chip ${quality === q ? "on" : ""}`} aria-pressed={quality === q} disabled={!!preparing || failed.includes(q)} onClick={() => setQuality(q)}>
-                  {QUALITY_LABEL[q]}
+                  {t(QUALITY_LABEL[q])}
                   {files[q] && <span>{fmtSize(files[q]!.size_bytes)}</span>}
                 </button>
               ))}
             </div>
             {preparing ? (
-              <div className="step-bar" role="progressbar" aria-label="Comprimiendo el video" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}>
+              <div className="step-bar" role="progressbar" aria-label={t("Comprimiendo el video")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}>
                 <i style={{ width: `${pct}%` }} />
               </div>
             ) : (
@@ -183,10 +184,10 @@ export function ShareDialog({ match, clip, onClose }: { match: Match; clip?: Cli
                   <b className="share-size">
                     {fmtSize(file.size_bytes)}
                     {file.width > 0 && ` · ${file.width}×${file.height}`}
-                    {file.size_bytes < file.original_bytes * 0.9 && ` · el original pesa ${fmtSize(file.original_bytes)}`}
+                    {file.size_bytes < file.original_bytes * 0.9 && ` · ${t("el original pesa {size}", { size: fmtSize(file.original_bytes) })}`}
                   </b>
                 )}{" "}
-                {QUALITY_HINT[quality]}
+                {t(QUALITY_HINT[quality])}
               </p>
             )}
           </div>
@@ -194,13 +195,13 @@ export function ShareDialog({ match, clip, onClose }: { match: Match; clip?: Cli
 
         <div className="tabs" role="tablist">
           <button role="tab" aria-selected={tab === "file"} className={tab === "file" ? "on" : ""} disabled={onlyDrive} onClick={() => setTab("file")}>
-            Archivo
+            {t("Archivo")}
           </button>
           <button role="tab" aria-selected={tab === "wifi"} className={tab === "wifi" ? "on" : ""} disabled={onlyDrive} onClick={() => setTab("wifi")}>
-            Al teléfono (Wi-Fi)
+            {t("Al teléfono (Wi-Fi)")}
           </button>
           <button role="tab" aria-selected={tab === "drive"} className={tab === "drive" ? "on" : ""} onClick={() => setTab("drive")}>
-            Enlace de Drive
+            {t("Enlace de Drive")}
           </button>
         </div>
 
@@ -209,28 +210,28 @@ export function ShareDialog({ match, clip, onClose }: { match: Match; clip?: Cli
             (file ? (
               <div className="share-file">
                 <div className="share-actions">
-                  <button className="btn primary" disabled={!!busy} onClick={() => act("copy", "Video copiado: pégalo con Ctrl+V", () => api.shareFile(match.id, clip?.id, quality, "copy"))}>
-                    <Icon name="copy" size={16} /> Copiar video
+                  <button className="btn primary" disabled={!!busy} onClick={() => act("copy", t("Video copiado: pégalo con Ctrl+V"), () => api.shareFile(match.id, clip?.id, quality, "copy"))}>
+                    <Icon name="copy" size={16} /> {t("Copiar video")}
                   </button>
                   <button className="btn light" disabled={!!busy} onClick={() => act("system", "", () => api.shareFile(match.id, clip?.id, quality, "system"))}>
-                    <Icon name="upload" size={16} /> Compartir con…
+                    <Icon name="upload" size={16} /> {t("Compartir con…")}
                   </button>
                   <button className="btn ghost" disabled={!!busy} onClick={saveAs}>
-                    <Icon name="download" size={16} /> Guardar como…
+                    <Icon name="download" size={16} /> {t("Guardar como…")}
                   </button>
                   <button className="btn ghost" disabled={!!busy} onClick={() => act("reveal", "", () => api.shareFile(match.id, clip?.id, quality, "reveal"))}>
-                    <Icon name="folder" size={16} /> Mostrar en carpeta
+                    <Icon name="folder" size={16} /> {t("Mostrar en carpeta")}
                   </button>
                 </div>
                 <ul className="share-tips muted small">
                   <li>
-                    <b>Copiar video</b> y pegar con <kbd>Ctrl</kbd> + <kbd>V</kbd> en el chat de WhatsApp, Discord o Telegram.
+                    <b>{t("Copiar video")}</b> {t("y pegar con")} <kbd>Ctrl</kbd> + <kbd>V</kbd> {t("en el chat de WhatsApp, Discord o Telegram.")}
                   </li>
                   <li>
-                    <b>Compartir con…</b> abre el panel de Windows: apps instaladas, Vínculo Móvil y dispositivos cercanos.
+                    <b>{t("Compartir con…")}</b> {t("abre el panel de Windows: apps instaladas, Vínculo Móvil y dispositivos cercanos.")}
                   </li>
                   <li>
-                    Para Instagram o TikTok desde la PC, usa <b>Mostrar en carpeta</b> y arrastra el archivo a la página de subida.
+                    {t("Para Instagram o TikTok desde la PC, usa")} <b>{t("Mostrar en carpeta")}</b> {t("y arrastra el archivo a la página de subida.")}
                   </li>
                 </ul>
               </div>
@@ -243,16 +244,16 @@ export function ShareDialog({ match, clip, onClose }: { match: Match; clip?: Cli
               <>
                 <div className="qr" dangerouslySetInnerHTML={{ __html: link.qr_svg }} />
                 <div className="share-text">
-                  <p>Escanea con la cámara del teléfono conectado a la misma red. Se abre el video con un botón para descargarlo ({fmtSize(file.size_bytes)}).</p>
+                  <p>{t("Escanea con la cámara del teléfono conectado a la misma red. Se abre el video con un botón para descargarlo ({size}).", { size: fmtSize(file.size_bytes) })}</p>
                   <div className="url-row">
-                    <input className="input" readOnly value={link.url} onFocus={(e) => e.target.select()} aria-label="Enlace para el teléfono" />
+                    <input className="input" readOnly value={link.url} onFocus={(e) => e.target.select()} aria-label={t("Enlace para el teléfono")} />
                     <button className="btn ghost" onClick={() => navigator.clipboard.writeText(link.url).then(() => (setCopied(true), setTimeout(() => setCopied(false), 1500)))}>
-                      <Icon name={copied ? "check" : "copy"} /> {copied ? "Copiado" : "Copiar"}
+                      <Icon name={copied ? "check" : "copy"} /> {copied ? t("Copiado") : t("Copiar")}
                     </button>
                   </div>
                   {(link.addresses?.length ?? 0) > 1 && (
                     <label className="sort" style={{ marginLeft: 0 }}>
-                      Red
+                      {t("Red")}
                       <select value={link.addresses![0].ip} onChange={(e) => pickAddress(e.target.value)}>
                         {link.addresses!.map((a) => (
                           <option key={a.ip} value={a.ip}>
@@ -263,18 +264,18 @@ export function ShareDialog({ match, clip, onClose }: { match: Match; clip?: Cli
                     </label>
                   )}
                   {firewall === "allowed" ? (
-                    <p className="muted small">El firewall de Windows permite la conexión. Si el teléfono no abre el enlace, revisa que esté en el mismo Wi-Fi y, si usas una VPN en la PC, que permita el tráfico de la red local.</p>
+                    <p className="muted small">{t("El firewall de Windows permite la conexión. Si el teléfono no abre el enlace, revisa que esté en el mismo Wi-Fi y, si usas una VPN en la PC, que permita el tráfico de la red local.")}</p>
                   ) : firewall ? (
                     <div className="share-warn" role="alert">
                       <p>
                         {firewall === "blocked"
-                          ? "El firewall de Windows está bloqueando a ggswp: el teléfono no puede abrir este enlace."
+                          ? t("El firewall de Windows está bloqueando a ggswp: el teléfono no puede abrir este enlace.")
                           : firewall === "fixing"
-                            ? "Acepta el aviso de Windows para cambiar el firewall…"
-                            : "El firewall de Windows todavía no permite a ggswp en esta red: es probable que el teléfono no pueda abrir el enlace."}
+                            ? t("Acepta el aviso de Windows para cambiar el firewall…")
+                            : t("El firewall de Windows todavía no permite a ggswp en esta red: es probable que el teléfono no pueda abrir el enlace.")}
                       </p>
                       <button className="btn light sm" disabled={firewall === "fixing"} onClick={allowFirewall}>
-                        {firewall === "fixing" ? <span className="spinner" /> : <Icon name="check" size={15} />} Permitir en el firewall
+                        {firewall === "fixing" ? <span className="spinner" /> : <Icon name="check" size={15} />} {t("Permitir en el firewall")}
                       </button>
                     </div>
                   ) : null}
@@ -289,24 +290,24 @@ export function ShareDialog({ match, clip, onClose }: { match: Match; clip?: Cli
               <>
                 <div className="qr" dangerouslySetInnerHTML={{ __html: drive.qr_svg }} />
                 <div className="share-text">
-                  <p>Cualquiera con este enlace puede verlo y descargarlo desde Drive, desde cualquier red.</p>
+                  <p>{t("Cualquiera con este enlace puede verlo y descargarlo desde Drive, desde cualquier red.")}</p>
                   <div className="url-row">
-                    <input className="input" readOnly value={drive.url} onFocus={(e) => e.target.select()} aria-label="Enlace de Drive" />
+                    <input className="input" readOnly value={drive.url} onFocus={(e) => e.target.select()} aria-label={t("Enlace de Drive")} />
                     <button className="btn ghost" onClick={() => navigator.clipboard.writeText(drive.url).then(() => (setCopied(true), setTimeout(() => setCopied(false), 1500)))}>
-                      <Icon name={copied ? "check" : "copy"} /> {copied ? "Copiado" : "Copiar"}
+                      <Icon name={copied ? "check" : "copy"} /> {copied ? t("Copiado") : t("Copiar")}
                     </button>
                   </div>
                 </div>
               </>
             ) : busy === "drive" ? (
               <div className="share-wait">
-                <span className="spinner" /> Subiendo a Drive y creando el enlace…
+                <span className="spinner" /> {t("Subiendo a Drive y creando el enlace…")}
               </div>
             ) : (
               <div className="share-wait">
-                <p>Se sube el video a tu Drive (carpeta ggswp) y se crea un enlace para verlo. Drive guarda su propia copia comprimida, la que eliges en Ajustes.</p>
+                <p>{t("Se sube el video a tu Drive (carpeta ggswp) y se crea un enlace para verlo. Drive guarda su propia copia comprimida, la que eliges en Ajustes.")}</p>
                 <button className="btn primary" onClick={loadDrive}>
-                  <Icon name="cloud" /> Crear enlace de Drive
+                  <Icon name="cloud" /> {t("Crear enlace de Drive")}
                 </button>
               </div>
             ))}

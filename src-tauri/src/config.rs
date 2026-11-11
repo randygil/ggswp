@@ -61,6 +61,14 @@ impl Default for Hotkeys {
     }
 }
 
+/// Otro juego (además de Fortnite) que se graba mientras está abierto.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GameProfile {
+    pub name: String,
+    /// Nombre del ejecutable, p. ej. `VALORANT-Win64-Shipping.exe`.
+    pub exe: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -78,6 +86,15 @@ pub struct Settings {
     pub system_audio: bool,
     pub microphone: bool,
     pub mic_volume: f32,
+    /// Graba el audio del juego en una pista aparte del resto (Discord, música, navegador),
+    /// para poder dejarlo afuera de los clips.
+    pub separate_audio: bool,
+    /// Los clips incluyen lo que suena fuera del juego.
+    pub clip_other_audio: bool,
+    /// Los clips incluyen el micrófono.
+    pub clip_mic_audio: bool,
+    /// Otros juegos que se graban mientras están abiertos (sin detección de eventos).
+    pub games: Vec<GameProfile>,
     pub auto_clips: bool,
     pub clip_before_s: f64,
     pub clip_after_s: f64,
@@ -87,6 +104,11 @@ pub struct Settings {
     pub clip_quality: String,
     /// Zonas del HUD y encuadre del modo móvil del editor.
     pub mobile_layout: crate::export::MobileLayout,
+    /// Disposiciones del modo móvil guardadas con nombre.
+    pub mobile_presets: Vec<crate::export::MobilePreset>,
+    /// Al analizar una partida, su mejor jugada queda lista en vertical: "off" | "vertical" |
+    /// "mobile".
+    pub best_play: String,
     pub ffmpeg_path: Option<PathBuf>,
     pub share_port: u16,
     pub launch_at_startup: bool,
@@ -107,6 +129,8 @@ pub struct Settings {
     pub local_days: u32,
     /// Lee los avisos "+PE COFRE" del video para contar los cofres abiertos.
     pub detect_chests: bool,
+    /// Idioma de la interfaz: "auto" (el de Windows) | "es" | "en".
+    pub language: String,
 }
 
 impl Default for Settings {
@@ -126,12 +150,18 @@ impl Default for Settings {
             system_audio: true,
             microphone: false,
             mic_volume: 1.0,
+            separate_audio: true,
+            clip_other_audio: true,
+            clip_mic_audio: true,
+            games: Vec::new(),
             auto_clips: true,
             clip_before_s: 12.0,
             clip_after_s: 4.0,
             clip_deaths: true,
             clip_quality: "share".into(),
             mobile_layout: Default::default(),
+            mobile_presets: Vec::new(),
+            best_play: "vertical".into(),
             ffmpeg_path: None,
             share_port: 8765,
             launch_at_startup: false,
@@ -146,11 +176,22 @@ impl Default for Settings {
             retention_days: 15,
             local_days: 7,
             detect_chests: true,
+            language: "auto".into(),
         }
     }
 }
 
 impl Settings {
+    /// La interfaz va en inglés (si no, en español). En "auto" decide el idioma de Windows.
+    pub fn english(&self) -> bool {
+        match self.language.as_str() {
+            "en" => true,
+            "es" => false,
+            // El idioma primario son los 10 bits bajos del LANGID; 0x0A es español.
+            _ => unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() & 0x3ff != 0x0a },
+        }
+    }
+
     pub fn load(path: &Path) -> Self {
         std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }

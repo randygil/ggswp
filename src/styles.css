@@ -304,7 +304,27 @@ a:hover .play-dot, button:hover > .vf .play-dot, .hero-frame:hover .play-dot { t
 .player { display: flex; flex-direction: column; gap: 16px; }
 .video-wrap { background: #000; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line); }
 .video-wrap video { width: 100%; max-height: calc(100vh - 380px); min-height: 240px; display: block; cursor: pointer; aspect-ratio: 16 / 9; background: #000; }
-.video-wrap { position: relative; }
+.video-wrap { position: relative; overflow: hidden; }
+.video-wrap video { transition: transform 0.15s ease-out; }
+.fx-texts { position: absolute; pointer-events: none; overflow: hidden; }
+.fx-texts span { position: absolute; left: 50%; transform: translate(-50%, -50%); white-space: nowrap; font-weight: 600; line-height: 1; paint-order: stroke fill; }
+.fx-panel { display: grid; gap: 14px; padding: 14px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--ink-2); }
+.fx-group { display: grid; gap: 8px; justify-items: start; }
+.fx-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; width: 100%; }
+.fx-row .input { flex: 1 1 180px; min-width: 0; min-height: 34px; }
+.fx-row select { min-height: 34px; }
+.fx-slider { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.fx-slider input { width: 110px; accent-color: var(--accent); }
+.fx-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); }
+.fx-check input { accent-color: var(--accent); width: 16px; height: 16px; }
+.fx-times { font-family: var(--mono); font-size: 13px; color: var(--text); }
+.fx-times i { font-style: normal; color: var(--text-3); margin: 0 4px; }
+.fx-file { font-family: var(--mono); font-size: 12px; color: var(--text-2); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-fx { position: absolute; top: 28px; bottom: 0; background: color-mix(in srgb, var(--flare) 30%, transparent); border-left: 2px solid var(--flare); border-right: 2px solid var(--flare); pointer-events: none; }
+.join-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; }
+.join-bar .muted { flex: 1 1 120px; }
+.join-n { position: absolute; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent-ink); font-family: var(--mono); font-size: 22px; font-weight: 700; }
+.best { color: var(--accent); font-style: normal; }
 .video-wrap.mobile { display: flex; align-items: flex-start; gap: 12px; background: var(--ink-1); }
 .video-wrap.mobile video { flex: 1 1 0; min-width: 0; width: auto; }
 .mf-preview { flex: none; display: block; background: #000; border-left: 1px solid var(--line); cursor: ns-resize; touch-action: none; }
@@ -315,6 +335,8 @@ a:hover .play-dot, button:hover > .vf .play-dot, .hero-frame:hover .play-dot { t
 .mf-label { position: absolute; left: -2px; bottom: 100%; padding: 2px 6px; background: var(--accent); color: var(--accent-ink); font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; user-select: none; }
 .mf-handle { left: 50%; top: 8px; bottom: auto; transform: translateX(-50%); background: var(--text); color: var(--ink-0); cursor: ew-resize; pointer-events: auto; touch-action: none; padding: 5px 9px; border-radius: 2px; }
 .mf-grip { position: absolute; right: -7px; bottom: -7px; width: 14px; height: 14px; background: var(--accent); border: 2px solid var(--ink-0); cursor: nwse-resize; touch-action: none; }
+.mf-region.extra { border-style: dashed; }
+.mf-remove { position: absolute; right: -2px; bottom: 100%; width: 18px; height: 18px; display: grid; place-items: center; background: var(--flare, #ff5d5d); color: #fff; font-size: 13px; line-height: 1; font-weight: 700; }
 .mf-help { margin: 0; line-height: 1.5; }
 .mf-help b { color: var(--text-2); }
 .video-wrap:fullscreen video { max-height: 100vh; height: 100%; }
@@ -598,3 +620,9 @@ a:hover .play-dot, button:hover > .vf .play-dot, .hero-frame:hover .play-dot { t
 .sv-table .link-btn { margin-left: 0; font-family: var(--mono); font-size: 12.5px; color: var(--text); }
 .sv-table .link-btn:hover { color: var(--accent); }
 .sv-compare { max-width: 720px; background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--radius); border-collapse: separate; border-spacing: 0; }
+.checks .warn { color: #ffe3a8; }
+.checks .warn::before { background: #ffd23f; }
+.preset-form { display: flex; align-items: center; gap: 8px; }
+.preset-form .input { width: 170px; min-height: 34px; flex: none; }
+.mf-region.extra .mf-label { bottom: auto; top: -2px; }
+.mf-region.extra .mf-remove { bottom: auto; top: -2px; }

@@ -6,13 +6,11 @@ Automatic Fortnite match recorder for Windows. It detects when each match starts
 records the screen (what you see) with audio, marks your eliminations on the timeline,
 generates clips and lets you edit them, send them to your phone or upload them to Google Drive.
 
-A single desktop app (Tauri + React), no OBS needed: capture is built in.
+A single desktop app (Tauri + React), no OBS needed: capture is built in. The interface comes
+in English and Spanish.
 
 **Download:** the installer is in [Releases](https://github.com/randygil/ggswp/releases).
 Once installed, the app tells you when a new version is available.
-
-> The app's interface is in Spanish. Interface labels are quoted here as they appear on
-> screen, with a translation next to them.
 
 ## What it does
 
@@ -31,7 +29,17 @@ Once installed, the app tells you when a new version is available.
 - **Light clips**: saved as H.264 at 1080p (about 1 MB per second) instead of at recording
   quality, ready for WhatsApp and Instagram. The editor exports in horizontal, vertical 9:16 or
   **mobile mode** (9:16 with health and weapons in a strip you can move to any height; the zones
-  are adjusted by dragging over the video, with a live preview) and in three qualities.
+  are adjusted by dragging over the video, with a live preview; you can add loose pieces such as
+  the minimap and save the layout as a template) and in three qualities.
+- **Audio on separate tracks**: the game is recorded apart from everything else (Discord, music,
+  browser) and from the microphone. The full match keeps it all; each clip carries only what
+  you pick.
+- **Editor effects**: text over the clip, slow motion and zoom on the crosshair for a stretch,
+  background music and volume. It also joins several clips into one, in the order you choose.
+- **Best play**: when each match ends it picks its best clip and leaves a 9:16 version ready to
+  upload. **Weekly recap**: one video with the best of the last 7 days.
+- **Other games**: records the whole session of the games you add in Settings (no event
+  detection; hotkeys work the same).
 - **Sharing**: copy the video to the clipboard, the Windows "Share" panel, save as, to your
   phone over Wi-Fi, or Drive with a QR code. Highlights menu over the game and right-click menus.
 
@@ -40,14 +48,15 @@ Once installed, the app tells you when a new version is available.
 | Piece | Technique |
 |---|---|
 | Match detection | Reads `%LOCALAPPDATA%\FortniteGame\Saved\Logs\FortniteGame.log` live: `LoadMap` to a server → loading, `MatchState … InProgress` → start, `EAthenaGamePhase::Aircraft` → battle bus, `Match finished for … end game` → you were eliminated or won, `LoadMap … Frontend` → lobby. |
-| Video | Desktop Duplication (`ddagrab`) of the monitor Fortnite is on → NVENC (H.264/HEVC/AV1). Frames never leave the GPU. |
-| Audio | WASAPI loopback (whatever plays on your output) and an optional microphone. Each packet is placed by its QPC timestamp, the same clock as the video, so sync is exact. |
+| Video | Desktop Duplication (`ddagrab`) of the monitor the game is on → the graphics card's encoder: NVENC (NVIDIA), AMF (AMD) or Quick Sync (Intel), in H.264/HEVC/AV1; with none of them, software `libx264`. At startup it tests which ones work. With NVENC and AMF frames never leave the GPU. |
+| Audio | WASAPI: loopback of the game's process, loopback of everything else, and an optional microphone, each on its own track (plus one with the mix, which is what any player plays). If Windows cannot split by process, loopback of the output device. Each packet is placed by its QPC timestamp, the same clock as the video, so sync is exact. |
 | Eliminations | When the match ends, it reads the `.replay` in `Saved\Demos` (`playerElim` events, AES-256 encrypted with the key in the header): who eliminated whom, knocks, distance and exact time. If there is no replay, it uses the highlight notices Fortnite sends to NVIDIA (`HLSetVideo`). |
 | Anti-cheat | Nothing is injected into the game and its memory is never read: only files Fortnite writes to disk (the same thing Medal does). |
 
 ## Requirements
 
-- Windows 10/11 with an NVIDIA GPU (NVENC).
+- Windows 10/11 with an NVIDIA, AMD or Intel card (without a hardware encoder it records in
+  software, which uses a lot of CPU). Splitting the game's audio needs Windows 10 2004 or later.
 - In Fortnite: **Settings → Game → Replays enabled** (to detect eliminations) and
   **Window mode: Windowed Fullscreen** if you want to see the notices and the menu over the game.
 - For development: Node 20+, stable Rust and ffmpeg with `ddagrab` (6.0 or later).
@@ -56,10 +65,10 @@ Once installed, the app tells you when a new version is available.
 
 The app lives in the system tray. When you enter a match it starts recording on its own and,
 when the match ends, it processes the video: events, thumbnail and automatic clips of every
-elimination (consecutive eliminations are merged into one clip: "Doble eliminación",
-"Victoria magistral"…).
+elimination (consecutive eliminations are merged into one clip: "Double elimination",
+"Victory Royale"…).
 
-### Global hotkeys (changeable in Ajustes / Settings)
+### Global hotkeys (changeable in Settings)
 
 | Hotkey | Action |
 |---|---|
@@ -73,17 +82,18 @@ elimination (consecutive eliminations are merged into one clip: "Doble eliminaci
 ### Editor
 
 In the match view: `I` / `O` mark the start and end, you drag the edges on the timeline, and
-**Exportar clip** (export clip) cuts frame-exact (re-encodes with NVENC). Clicking a clip on the
-timeline jumps to that moment and marks it, ready to trim and export. `←`/`→` 5 s,
+**Export clip** cuts frame-exact (re-encodes with the graphics card). Clicking an event or a clip
+on the timeline jumps to that moment and marks it, ready to trim and export. **Effects** opens
+the text, slow motion with zoom, music and audio sources of the clip. `←`/`→` 5 s,
 `Shift+←/→` 1 s, `,`/`.` frame by frame, `Space` pauses, `F` fullscreen.
 
 ### Sharing
 
-Before sharing you pick the format: **para compartir** (for sharing: 1080p, ~1 MB/s),
-**liviano** (light: 720p, under 16 MB) or **original**. If needed, the copy is encoded on the
+Before sharing you pick the format: **for sharing** (1080p, ~1 MB/s), **light** (720p, under
+16 MB) or **original**. If needed, the copy is encoded on the
 spot and kept in the match's `share/` folder.
 
-- **Archivo** (file): copy the video (to paste it with Ctrl+V into WhatsApp, Discord or
+- **File**: copy the video (to paste it with Ctrl+V into WhatsApp, Discord or
   Telegram), open the Windows "Share" panel, save as, or show it in its folder.
 - **Wi-Fi**: a QR code with a local link (`http://<your-ip>:8765/…`); the phone opens the video
   and can download it. It must be on the same network. The link expires after 24 h. The address
@@ -99,7 +109,7 @@ spot and kept in the match's `share/` folder.
    publish it ("In production"): the `drive.file` scope needs no verification, and that way
    access does not expire after 7 days.
 3. **Credentials → Create OAuth client ID → Desktop app**. Copy the *Client ID* and the
-   *Client secret* into ggswp → Ajustes → Google Drive → Conectar.
+   *Client secret* into ggswp → Settings → Google Drive → Connect.
 
 ggswp can only see the files it uploads itself. Optionally it uploads each match and/or its
 clips automatically when the match ends.
@@ -143,10 +153,10 @@ src-tauri/src/
   hotkeys.rs          global hotkeys
   share.rs            Wi-Fi server + QR, local network and firewall
   winshare.rs         clipboard and Windows "Share" panel
-  export.rs           clip output formats (for sharing, light, original)
+  export.rs           output formats, mobile mode and editor effects (text, slow motion, music)
   gdrive.rs uploads.rs  Google Drive
   fortnite/chests.rs  opened chests (OCR of the XP popups)
-  montage.rs          match recap and vertical version
+  montage.rs          match recap, weekly recap, clip joining and vertical version
   retention.rs        expiry (PC and Drive)
   stats.rs            stats history
 src/                  React interface (gallery, clips, editor, stats, settings, overlay)
@@ -171,7 +181,10 @@ The installer includes `ffmpeg.exe` (FFmpeg, GPLv3), which ggswp runs as a separ
 
 - With Fortnite in exclusive *Fullscreen* the notices and the menu are not visible (recording
   works the same).
-- System audio includes everything that is playing (Discord, music…). Capturing only the
-  Fortnite process is still pending.
-- NVIDIA encoders only for now (AMD AMF / Intel QSV would be easy to add).
+- The AMD (AMF) and Intel (Quick Sync) encoders are implemented, but only NVENC and the software
+  encoder have been tested: if they fail on your card, pick "Software" in Settings.
+- The Fortnite replay does not say when you revive someone or how many opponents were left: the
+  app recognises long shots, streaks, the winning elimination and the ones you get after being
+  knocked, but not revives or 1-versus-many situations.
+- In other games there are no events or automatic clips: only the recording and the hotkeys.
 - HEVC/AV1 videos play inside the app only if Windows has the codecs; H.264 always works.

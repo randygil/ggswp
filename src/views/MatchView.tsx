@@ -16,24 +16,31 @@ import {
   QUALITY_LABEL,
   type Clip,
   type Frame,
+  type Fx,
   type Match,
   type MatchEvent,
   type MobileLayout,
+  type MobilePreset,
   type Quality,
   type Step,
   type UploadProgress,
 } from "../api";
 import { useContextMenu } from "../components/ContextMenu";
 import { Icon } from "../components/Icon";
-import { DEFAULT_MOBILE_LAYOUT, MobileOverlay, MobilePreview } from "../components/MobileFrame";
+import { EMPTY_FX, FxPanel, hasFx, TextPreview, toFx, type FxState } from "../components/EditorFx";
+import { DEFAULT_MOBILE_LAYOUT, FREE_EXTRA, MINIMAP_EXTRA, MobileOverlay, MobilePreview } from "../components/MobileFrame";
 import { clipMenuItems, eventMenuItems, makeVertical, selectAround, useRun } from "../components/menus";
 import { ShareDialog } from "../components/ShareDialog";
 import { rulerStep } from "../components/Signature";
 import { StepProgress } from "../components/StepProgress";
 import { useToast } from "../components/Toast";
+import { locale, t, tr } from "../i18n";
 import { hasPlacement, summaryRows } from "../matchStats";
 
 type Source = { kind: "match" } | { kind: "clip"; clip: Clip };
+
+/** Decimales con coma en español y con punto en inglés. */
+const dec = (s: string) => (locale() === "en" ? s : s.replace(".", ","));
 
 export function MatchView(props: {
   id: string;
@@ -59,6 +66,8 @@ export function MatchView(props: {
   const [share, setShare] = useState<{ clip?: Clip } | null>(null);
   const [tab, setTab] = useState<"events" | "clips">(props.initialClip ? "clips" : "events");
   const [editingTitle, setEditingTitle] = useState(false);
+  // Clips elegidos para unir, en orden; `null` = no se está uniendo.
+  const [joining, setJoining] = useState<string[] | null>(null);
 
   // Si el clip activo se borra, volvemos a la partida completa.
   useEffect(() => {
@@ -79,10 +88,10 @@ export function MatchView(props: {
     return (
       <div className="page">
         <button className="btn ghost" onClick={onBack} style={{ alignSelf: "flex-start" }}>
-          <Icon name="arrowLeft" /> Volver
+          <Icon name="arrowLeft" /> {t("Volver")}
         </button>
         <div className="empty">
-          <h2>Partida no encontrada</h2>
+          <h2>{t("Partida no encontrada")}</h2>
         </div>
       </div>
     );
@@ -128,7 +137,7 @@ export function MatchView(props: {
     setTab("clips");
   };
   const createReel = () =>
-    run("Resumen listo", async () => {
+    run(t("Resumen listo"), async () => {
       showClip(await api.createReel(m.id));
     });
   const eventMenu =(ev: React.MouseEvent, e: MatchEvent) =>
@@ -144,7 +153,7 @@ export function MatchView(props: {
   return (
     <div className="page match-page">
       <header className="match-head">
-        <button className="icon-btn" onClick={onBack} aria-label="Volver a partidas">
+        <button className="icon-btn" onClick={onBack} aria-label={t("Volver a partidas")}>
           <Icon name="arrowLeft" />
         </button>
         <div className="match-title">
@@ -152,7 +161,7 @@ export function MatchView(props: {
             <input
               className="title-input"
               autoFocus
-              aria-label="Nombre de la partida"
+              aria-label={t("Nombre de la partida")}
               defaultValue={m.title}
               onBlur={(e) => {
                 setEditingTitle(false);
@@ -164,13 +173,13 @@ export function MatchView(props: {
               }}
             />
           ) : (
-            <h1 onDoubleClick={() => setEditingTitle(true)} title="Doble clic para renombrar">
-              {m.victory && (
+            <h1 onDoubleClick={() => setEditingTitle(true)} title={t("Doble clic para renombrar")}>
+              {m.victory && !m.title.startsWith("Victoria") && (
                 <>
-                  Victoria <span className="accent">·</span>{" "}
+                  {t("Victoria")} <span className="accent">·</span>{" "}
                 </>
               )}
-              {m.title}
+              {tr(m.title)}
             </h1>
           )}
           <p>
@@ -180,44 +189,44 @@ export function MatchView(props: {
             {hasPlacement(m) && ` · #${m.placement}${m.total_players ? `/${m.total_players}` : ""}`}
             {m.width > 0 && ` · ${m.width}×${m.height}`}
             {m.size_bytes > 0 && ` · ${fmtSize(m.size_bytes)}`}
-            {` · ${pad2(m.kills)} elim`}
-            {m.chests > 0 && ` · ${pad2(m.chests)} cofres`}
-            {localLeft !== null && (left === null || localLeft < left) && ` · sale de la PC ${localLeft <= 0 ? "hoy" : localLeft === 1 ? "mañana" : `en ${localLeft} días`}`}
-            {m.keep ? " · conservada" : left !== null ? ` · ${expiryText(left).toLocaleLowerCase("es")}` : ""}
-            {m.offloaded && " · solo en Drive"}
+            {m.game ? ` · ${m.game}` : ` · ${t("{n} elim", { n: pad2(m.kills) })}`}
+            {m.chests > 0 && ` · ${t("{n} cofres", { n: pad2(m.chests) })}`}
+            {localLeft !== null && (left === null || localLeft < left) && ` · ${localLeft <= 0 ? t("sale de la PC hoy") : localLeft === 1 ? t("sale de la PC mañana") : t("sale de la PC en {n} días", { n: localLeft })}`}
+            {m.keep ? ` · ${t("conservada")}` : left !== null ? ` · ${expiryText(left).toLocaleLowerCase(locale())}` : ""}
+            {m.offloaded && ` · ${t("solo en Drive")}`}
           </p>
         </div>
         <div className="head-actions">
           <button
             className={`icon-btn ${m.keep ? "fav" : ""}`}
-            onClick={() => run(m.keep ? "Ya no está conservada" : "Partida conservada: no vencerá", () => api.updateMatch(m.id, { keep: !m.keep }))}
-            aria-label={m.keep ? "Dejar de conservar" : "Conservar partida"}
+            onClick={() => run(m.keep ? t("Ya no está conservada") : t("Partida conservada: no vencerá"), () => api.updateMatch(m.id, { keep: !m.keep }))}
+            aria-label={m.keep ? t("Dejar de conservar") : t("Conservar partida")}
             aria-pressed={m.keep}
-            title={m.keep ? "Conservada: no vence. Clic para dejar de conservarla" : "Conservar: la partida no vencerá"}
+            title={m.keep ? t("Conservada: no vence. Clic para dejar de conservarla") : t("Conservar: la partida no vencerá")}
           >
             <Icon name="keep" filled={m.keep} />
           </button>
-          <button className="icon-btn" onClick={() => setEditingTitle(true)} title="Renombrar" aria-label="Renombrar">
+          <button className="icon-btn" onClick={() => setEditingTitle(true)} title={t("Renombrar")} aria-label={t("Renombrar")}>
             <Icon name="edit" />
           </button>
-          <button className="icon-btn" onClick={() => run("", () => api.reveal(m.id))} title="Abrir carpeta" aria-label="Abrir carpeta">
+          <button className="icon-btn" onClick={() => run("", () => api.reveal(m.id))} title={t("Abrir carpeta")} aria-label={t("Abrir carpeta")}>
             <Icon name="folder" />
           </button>
           <button
             className="icon-btn"
             disabled={m.offloaded}
-            onClick={() => run("Partida analizada de nuevo", () => api.reprocess(m.id))}
-            title={m.offloaded ? "Descarga el video para volver a analizarlo" : "Volver a leer el replay y regenerar clips"}
-            aria-label="Volver a analizar"
+            onClick={() => run(t("Partida analizada de nuevo"), () => api.reprocess(m.id))}
+            title={m.offloaded ? t("Descarga el video para volver a analizarlo") : t("Volver a leer el replay y regenerar clips")}
+            aria-label={t("Volver a analizar")}
           >
             <Icon name="refresh" />
           </button>
           <button
             className="icon-btn"
             disabled={!!matchUpload}
-            onClick={() => (m.drive ? run("", () => api.driveOpen(m.id)) : run("Subida a Drive completa", () => api.driveUpload(m.id)))}
-            title={m.drive ? "Abrir en Google Drive" : "Subir partida completa a Drive"}
-            aria-label={m.drive ? "Abrir en Google Drive" : "Subir a Google Drive"}
+            onClick={() => (m.drive ? run("", () => api.driveOpen(m.id)) : run(t("Subida a Drive completa"), () => api.driveUpload(m.id)))}
+            title={m.drive ? t("Abrir en Google Drive") : t("Subir partida completa a Drive")}
+            aria-label={m.drive ? t("Abrir en Google Drive") : t("Subir a Google Drive")}
           >
             <Icon name={m.drive ? "check" : "cloud"} />
           </button>
@@ -225,12 +234,12 @@ export function MatchView(props: {
             className="icon-btn danger"
             onClick={() => {
               const msg = inDrive
-                ? "¿Borrar esta partida y sus clips? También se mandan a la papelera de Google Drive."
-                : "¿Borrar esta partida y todos sus clips del disco?";
-              if (confirm(msg)) run("Partida borrada", () => api.deleteMatch(m.id)).then(onBack);
+                ? t("¿Borrar esta partida y sus clips? También se mandan a la papelera de Google Drive.")
+                : t("¿Borrar esta partida y todos sus clips del disco?");
+              if (confirm(msg)) run(t("Partida borrada"), () => api.deleteMatch(m.id)).then(onBack);
             }}
-            title="Borrar"
-            aria-label="Borrar partida"
+            title={t("Borrar")}
+            aria-label={t("Borrar partida")}
           >
             <Icon name="trash" />
           </button>
@@ -238,12 +247,12 @@ export function MatchView(props: {
             className="btn ghost"
             disabled={!canClip || !!step}
             onClick={createReel}
-            title={m.offloaded ? "Descarga el video para crear un resumen" : "Junta las eliminaciones y los mejores momentos en un solo video"}
+            title={m.offloaded ? t("Descarga el video para crear un resumen") : t("Junta las eliminaciones y los mejores momentos en un solo video")}
           >
-            <Icon name="film" size={16} /> {hasReel ? "Rehacer resumen" : "Crear resumen"}
+            <Icon name="film" size={16} /> {hasReel ? t("Rehacer resumen") : t("Crear resumen")}
           </button>
-          <button className="btn light" onClick={() => setShare({})} title="Compartir el video de la partida completa">
-            <Icon name="upload" size={16} /> Compartir partida
+          <button className="btn light" onClick={() => setShare({})} title={t("Compartir el video de la partida completa")}>
+            <Icon name="upload" size={16} /> {t("Compartir partida")}
           </button>
         </div>
       </header>
@@ -252,12 +261,12 @@ export function MatchView(props: {
         <section className="player-col">
           {activeClip && (
             <div className="clip-bar">
-              <button className="btn ghost sm" onClick={() => setSource({ kind: "match" })} title="Volver al video de la partida completa">
-                <Icon name="arrowLeft" size={15} /> Partida completa
+              <button className="btn ghost sm" onClick={() => setSource({ kind: "match" })} title={t("Volver al video de la partida completa")}>
+                <Icon name="arrowLeft" size={15} /> {t("Partida completa")}
               </button>
               <span className="clip-bar-title">
-                <span className="label">Viendo el clip</span>
-                <b>{activeClip.title}</b>
+                <span className="label">{t("Viendo el clip")}</span>
+                <b>{tr(activeClip.title)}</b>
                 <small>
                   {fmtClock(activeClip.end - activeClip.start)}
                   {activeClip.kind === "vertical" && " · 9:16"}
@@ -266,12 +275,12 @@ export function MatchView(props: {
               </span>
               <div className="clip-bar-actions">
                 <button className="btn primary sm" onClick={() => setShare({ clip: activeClip })}>
-                  <Icon name="upload" size={15} /> Compartir clip
+                  <Icon name="upload" size={15} /> {t("Compartir clip")}
                 </button>
                 <button
                   className="icon-btn sm"
-                  title="Mostrar el clip en la carpeta"
-                  aria-label="Mostrar el clip en la carpeta"
+                  title={t("Mostrar el clip en la carpeta")}
+                  aria-label={t("Mostrar el clip en la carpeta")}
                   disabled={!!activeClip.offloaded}
                   onClick={() => run("", () => api.reveal(m.id, activeClip.id))}
                 >
@@ -279,11 +288,11 @@ export function MatchView(props: {
                 </button>
                 <button
                   className="icon-btn sm danger"
-                  title="Borrar este clip"
-                  aria-label="Borrar este clip"
+                  title={t("Borrar este clip")}
+                  aria-label={t("Borrar este clip")}
                   onClick={() =>
-                    confirm(activeClip.drive ? `¿Borrar el clip "${activeClip.title}"? También se manda a la papelera de Drive.` : `¿Borrar el clip "${activeClip.title}"?`) &&
-                    run("Clip borrado", () => api.deleteClip(m.id, activeClip.id))
+                    confirm(t(activeClip.drive ? '¿Borrar el clip "{title}"? También se manda a la papelera de Drive.' : '¿Borrar el clip "{title}"?', { title: tr(activeClip.title) })) &&
+                    run(t("Clip borrado"), () => api.deleteClip(m.id, activeClip.id))
                   }
                 >
                   <Icon name="trash" size={16} />
@@ -301,7 +310,7 @@ export function MatchView(props: {
               busy={!!step}
               onExport={async (o) => {
                 const c = await api.exportClip(m.id, { ...o, source: activeClip?.id });
-                toast.info(`Clip "${c.title}" guardado`);
+                toast.info(t('Clip "{title}" guardado', { title: tr(c.title) }));
                 showClip(c);
               }}
             />
@@ -309,19 +318,23 @@ export function MatchView(props: {
             <div className={`vf big player-ph drive-ph ${m.thumb ? "" : "dots"}`}>
               {(activeClip?.thumb ?? m.thumb) && <img src={fileUrl(m, (activeClip?.thumb ?? m.thumb)!)} alt="" />}
               <div className="drive-ph-body">
-                <span className="label">Solo en Google Drive</span>
-                <p>{activeClip ? "Este clip" : "Esta partida"} se borró de la PC después de subirse. Puedes verlo en Drive o descargarlo de nuevo para editarlo.</p>
+                <span className="label">{t("Solo en Google Drive")}</span>
+                <p>
+                  {activeClip
+                    ? t("Este clip se borró de la PC después de subirse. Puedes verlo en Drive o descargarlo de nuevo para editarlo.")
+                    : t("Esta partida se borró de la PC después de subirse. Puedes verlo en Drive o descargarlo de nuevo para editarlo.")}
+                </p>
                 {activeTransfer ? (
                   <span className="mono">
-                    <span className="spinner" /> Descargando… {Math.round((activeTransfer.sent / Math.max(1, activeTransfer.total)) * 100)} %
+                    <span className="spinner" /> {t("Descargando… {n} %", { n: Math.round((activeTransfer.sent / Math.max(1, activeTransfer.total)) * 100) })}
                   </span>
                 ) : (
                   <div className="drive-ph-actions">
                     <button className="btn light" onClick={() => run("", () => api.driveOpen(m.id, activeClip?.id))}>
-                      <Icon name="cloud" size={16} /> Ver en Drive
+                      <Icon name="cloud" size={16} /> {t("Ver en Drive")}
                     </button>
-                    <button className="btn ghost" onClick={() => run("Descargado de nuevo a la PC", () => api.driveDownload(m.id, activeClip?.id))}>
-                      <Icon name="download" size={16} /> Descargar a la PC
+                    <button className="btn ghost" onClick={() => run(t("Descargado de nuevo a la PC"), () => api.driveDownload(m.id, activeClip?.id))}>
+                      <Icon name="download" size={16} /> {t("Descargar a la PC")}
                     </button>
                   </div>
                 )}
@@ -330,26 +343,26 @@ export function MatchView(props: {
           ) : (
             <div className="vf big dots player-ph">
               {m.status === "error" ? (
-                <span className="flare">Error: {m.error}</span>
+                <span className="flare">{t("Error: {msg}", { msg: tr(m.error ?? "") })}</span>
               ) : (
                 m.status === "recording" ? (
                   <>
-                    <span className="spinner" /> Grabando…
+                    <span className="spinner" /> {t("Grabando…")}
                   </>
                 ) : (
-                  <StepProgress step={step} fallback="Procesando la partida…" />
+                  <StepProgress step={step} fallback={t("Procesando la partida…")} />
                 )
               )}
             </div>
           )}
           {src && step && (
             <div className="source-bar">
-              <StepProgress step={step} fallback="Analizando…" />
+              <StepProgress step={step} fallback={t("Analizando…")} />
             </div>
           )}
           {matchUpload && (
             <div className="source-bar">
-              <span>{matchUpload.download ? "Bajando la partida de Drive…" : "Subiendo partida a Drive…"} {Math.round((matchUpload.sent / Math.max(1, matchUpload.total)) * 100)} %</span>
+              <span>{t(matchUpload.download ? "Bajando la partida de Drive… {n} %" : "Subiendo partida a Drive… {n} %", { n: Math.round((matchUpload.sent / Math.max(1, matchUpload.total)) * 100) })}</span>
             </div>
           )}
         </section>
@@ -357,20 +370,20 @@ export function MatchView(props: {
         <aside className="side-col">
           <dl className="side-stats">
             <div>
-              <dt>Eliminaciones</dt>
+              <dt>{t("Eliminaciones")}</dt>
               <dd>{pad2(m.kills)}</dd>
             </div>
             <div>
-              <dt>Cofres</dt>
+              <dt>{t("Cofres")}</dt>
               <dd>{pad2(m.chests)}</dd>
             </div>
             <div>
-              <dt>Derribos</dt>
+              <dt>{t("Derribos")}</dt>
               <dd>{pad2(m.knocks)}</dd>
             </div>
             {hasPlacement(m) ? (
               <div>
-                <dt>{m.placement === 1 ? "Victoria" : "Puesto"}</dt>
+                <dt>{m.placement === 1 ? t("Victoria") : t("Puesto")}</dt>
                 <dd className={m.placement === 1 ? "accent" : ""}>
                   #{m.placement}
                   {m.total_players != null && <small> / {m.total_players}</small>}
@@ -378,38 +391,65 @@ export function MatchView(props: {
               </div>
             ) : (
               <div>
-                <dt>{m.victory ? "Victoria" : died !== null ? "Caída" : "Resultado"}</dt>
+                <dt>{m.victory ? t("Victoria") : died !== null ? t("Caída") : t("Resultado")}</dt>
                 <dd className={m.victory ? "accent" : died !== null ? "flare" : ""}>{m.victory ? "#1" : died !== null ? fmtClock(died) : "—"}</dd>
               </div>
             )}
           </dl>
           {summaryRows(m).length > 0 && (
-            <dl className="side-more" aria-label="Resumen de fin de partida">
+            <dl className="side-more" aria-label={t("Resumen de fin de partida")}>
               {hasPlacement(m) && died !== null && m.placement !== 1 && (
                 <div>
-                  <dt>Caída</dt>
+                  <dt>{t("Caída")}</dt>
                   <dd className="flare">{fmtClock(died)}</dd>
                 </div>
               )}
               {summaryRows(m).map(([label, value]) => (
                 <div key={label}>
-                  <dt>{label}</dt>
+                  <dt>{t(label)}</dt>
                   <dd>{value}</dd>
                 </div>
               ))}
             </dl>
           )}
-          <div className="tabs" role="tablist" aria-label="Contenido de la partida">
+          <div className="tabs" role="tablist" aria-label={t("Contenido de la partida")}>
             <button role="tab" aria-selected={tab === "events"} className={tab === "events" ? "on" : ""} onClick={() => setTab("events")}>
-              Eventos <span>{pad2(m.events.length)}</span>
+              {t("Eventos")} <span>{pad2(m.events.length)}</span>
             </button>
             <button role="tab" aria-selected={tab === "clips"} className={tab === "clips" ? "on" : ""} onClick={() => setTab("clips")}>
-              Clips <span>{pad2(m.clips.length)}</span>
+              {t("Clips")} <span>{pad2(m.clips.length)}</span>
             </button>
           </div>
+          {tab === "clips" && m.clips.filter((c) => !c.offloaded).length >= 2 && (
+            <div className="join-bar">
+              {joining ? (
+                <>
+                  <span className="muted small">{joining.length < 2 ? t("Elige los clips en el orden en que van.") : t("{n} clips, en ese orden.", { n: joining.length })}</span>
+                  <button
+                    className="btn primary sm"
+                    disabled={joining.length < 2 || !!step}
+                    onClick={() => {
+                      const ids = joining;
+                      setJoining(null);
+                      run(t("Clips unidos"), async () => showClip(await api.joinClips(m.id, ids)));
+                    }}
+                  >
+                    <Icon name="film" size={15} /> {t("Unir")}
+                  </button>
+                  <button className="btn ghost sm" onClick={() => setJoining(null)}>
+                    {t("Cancelar")}
+                  </button>
+                </>
+              ) : (
+                <button className="btn ghost sm" disabled={!!step} onClick={() => setJoining([])} title={t("Arma un video con varios clips, en el orden que elijas")}>
+                  <Icon name="film" size={15} /> {t("Unir clips")}
+                </button>
+              )}
+            </div>
+          )}
           {tab === "events" ? (
             <ol className="event-list">
-              {m.events.length === 0 && <li className="muted pad">Sin eventos detectados en esta partida.</li>}
+              {m.events.length === 0 && <li className="muted pad">{t("Sin eventos detectados en esta partida.")}</li>}
               {m.events.map((e, i) => (
                 <li key={i} onContextMenu={(ev) => eventMenu(ev, e)}>
                   <button
@@ -422,10 +462,10 @@ export function MatchView(props: {
                     <span className="ev-time">{fmtClock(e.t)}</span>
                     <span className="ev-bar" style={{ background: EVENT_COLORS[e.kind] }} />
                     <span className="ev-text">
-                      <b>{e.label}</b>
+                      <b>{tr(e.label)}</b>
                       <small>
-                        {EVENT_KIND[e.kind] ?? e.kind}
-                        {e.distance_m ? ` · a ${Math.round(e.distance_m)} m` : ""}
+                        {t(EVENT_KIND[e.kind] ?? e.kind)}
+                        {e.distance_m ? ` · ${t("a {n} m", { n: Math.round(e.distance_m) })}` : ""}
                       </small>
                     </span>
                   </button>
@@ -434,7 +474,7 @@ export function MatchView(props: {
             </ol>
           ) : (
             <ol className="clip-list">
-              {m.clips.length === 0 && <li className="muted pad">Sin clips. Usa «Nuevo clip» en el editor, ajusta el tramo y expórtalo.</li>}
+              {m.clips.length === 0 && <li className="muted pad">{t("Sin clips. Usa «Nuevo clip» en el editor, ajusta el tramo y expórtalo.")}</li>}
               {m.clips.map((c) => {
                 const up = uploads[`${m.id}/${c.id}`];
                 const active = source.kind === "clip" && source.clip.id === c.id;
@@ -449,28 +489,44 @@ export function MatchView(props: {
                       )
                     }
                   >
-                    <button className="clip-main" onClick={() => setSource({ kind: "clip", clip: c })} aria-current={active}>
-                      <div className={`vf ${c.thumb ? "" : "dots"}`}>{c.thumb && <img src={fileUrl(m, c.thumb)} alt="" />}</div>
+                    <button
+                      className="clip-main"
+                      disabled={!!joining && !!c.offloaded}
+                      onClick={() => (joining ? setJoining(joining.includes(c.id) ? joining.filter((x) => x !== c.id) : [...joining, c.id]) : setSource({ kind: "clip", clip: c }))}
+                      aria-current={active}
+                      aria-pressed={joining ? joining.includes(c.id) : undefined}
+                    >
+                      <div className={`vf ${c.thumb ? "" : "dots"}`}>
+                        {c.thumb && <img src={fileUrl(m, c.thumb)} alt="" />}
+                        {joining?.includes(c.id) && <span className="join-n">{joining.indexOf(c.id) + 1}</span>}
+                      </div>
                       <span>
-                        <b>{c.title}</b>
+                        <b>
+                          {c.best && (
+                            <i className="best" title={t("La mejor jugada de la partida")}>
+                              ★{" "}
+                            </i>
+                          )}
+                          {tr(c.title)}
+                        </b>
                         <small>
-                          {onTimeline(c) ? `${fmtClock(c.start)} → ${fmtClock(c.end)} · ${fmtClock(c.end - c.start)}` : `${c.kind === "reel" ? "Resumen · " : ""}${fmtClock(c.end - c.start)}`}
+                          {onTimeline(c) ? `${fmtClock(c.start)} → ${fmtClock(c.end)} · ${fmtClock(c.end - c.start)}` : `${c.kind === "reel" ? `${t("Resumen")} · ` : c.kind === "join" ? `${t("Unión")} · ` : ""}${fmtClock(c.end - c.start)}`}
                           {c.kind === "vertical" && " · 9:16"}
                           {m.clip_sizes?.[c.id] != null && ` · ${fmtSize(m.clip_sizes[c.id])}`}
-                          {up &&` · ${up.download ? "bajando" : "subiendo"} ${Math.round((up.sent / Math.max(1, up.total)) * 100)} %`}
-                          {c.offloaded && !up && " · solo en Drive"}
+                          {up &&` · ${t(up.download ? "bajando {n} %" : "subiendo {n} %", { n: Math.round((up.sent / Math.max(1, up.total)) * 100) })}`}
+                          {c.offloaded && !up && ` · ${t("solo en Drive")}`}
                         </small>
                       </span>
                     </button>
                     <div className="clip-actions">
-                      <button className="icon-btn sm bare" title="Compartir" aria-label={`Compartir ${c.title}`} onClick={() => setShare({ clip: c })}>
+                      <button className="icon-btn sm bare" title={t("Compartir")} aria-label={t("Compartir {title}", { title: tr(c.title) })} onClick={() => setShare({ clip: c })}>
                         <Icon name="upload" size={16} />
                       </button>
                       {c.kind !== "vertical" && (
                         <button
                           className="icon-btn sm bare"
-                          title="Versión vertical (TikTok, Shorts, Reels)"
-                          aria-label={`Crear versión vertical de ${c.title}`}
+                          title={t("Versión vertical (TikTok, Shorts, Reels)")}
+                          aria-label={t("Crear versión vertical de {title}", { title: tr(c.title) })}
                           disabled={!!c.offloaded || !!step || m.status !== "ready"}
                           onClick={() => makeVertical(m, c, run, showClip)}
                         >
@@ -479,29 +535,29 @@ export function MatchView(props: {
                       )}
                       <button
                         className="icon-btn sm bare"
-                        title={c.drive ? "Abrir en Google Drive" : "Subir a Drive"}
-                        aria-label={c.drive ? `Abrir ${c.title} en Drive` : `Subir ${c.title} a Drive`}
+                        title={c.drive ? t("Abrir en Google Drive") : t("Subir a Drive")}
+                        aria-label={t(c.drive ? "Abrir {title} en Drive" : "Subir {title} a Drive", { title: tr(c.title) })}
                         disabled={!!up}
-                        onClick={() => (c.drive ? run("", () => api.driveOpen(m.id, c.id)) : run("Clip subido a Drive", () => api.driveUpload(m.id, c.id)))}
+                        onClick={() => (c.drive ? run("", () => api.driveOpen(m.id, c.id)) : run(t("Clip subido a Drive"), () => api.driveUpload(m.id, c.id)))}
                       >
                         <Icon name={c.drive ? "check" : "cloud"} size={16} />
                       </button>
                       <button
                         className="icon-btn sm bare"
-                        title="Mostrar en carpeta"
+                        title={t("Mostrar en carpeta")}
                         disabled={!!c.offloaded}
-                        aria-label={`Mostrar ${c.title} en la carpeta`}
+                        aria-label={t("Mostrar {title} en la carpeta", { title: tr(c.title) })}
                         onClick={() => run("", () => api.reveal(m.id, c.id))}
                       >
                         <Icon name="folder" size={16} />
                       </button>
                       <button
                         className="icon-btn sm bare danger"
-                        title="Borrar clip"
-                        aria-label={`Borrar ${c.title}`}
+                        title={t("Borrar clip")}
+                        aria-label={t("Borrar {title}", { title: tr(c.title) })}
                         onClick={() =>
-                          confirm(c.drive ? `¿Borrar el clip "${c.title}"? También se manda a la papelera de Drive.` : `¿Borrar el clip "${c.title}"?`) &&
-                          run("Clip borrado", () => api.deleteClip(m.id, c.id))
+                          confirm(t(c.drive ? '¿Borrar el clip "{title}"? También se manda a la papelera de Drive.' : '¿Borrar el clip "{title}"?', { title: tr(c.title) })) &&
+                          run(t("Clip borrado"), () => api.deleteClip(m.id, c.id))
                         }
                       >
                         <Icon name="trash" size={16} />
@@ -523,7 +579,7 @@ export function MatchView(props: {
 /** Las etiquetas centradas sobre el cursor no se salen de la pista en los extremos. */
 const edgeSafe = (p: string) => `clamp(26px, ${p}, calc(100% - 26px))`;
 
-type ExportOptions = { start: number; end: number; title: string; quality: Quality; frame: Frame };
+type ExportOptions = { start: number; end: number; title: string; quality: Quality; frame: Frame; fx: Fx };
 
 function Player(props: {
   src: string;
@@ -539,7 +595,7 @@ function Player(props: {
   const video = useRef<HTMLVideoElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const bar = useRef<HTMLDivElement>(null);
-  const [t, setT] = useState(0);
+  const [pos, setT] = useState(0);
   const [dur, setDur] = useState(clip ? clip.end - clip.start : match.duration_s);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -556,13 +612,34 @@ function Player(props: {
   const mobile = frame === "mobile" && canFrame && (!!range || !!clip);
   // Zonas del modo móvil: se guardan en los ajustes al soltar cada cambio.
   const [layout, setLayout] = useState<MobileLayout>(DEFAULT_MOBILE_LAYOUT);
+  const [presets, setPresets] = useState<MobilePreset[]>([]);
+  // Nombre de la plantilla que se está por guardar; `null` = no se está guardando.
+  const [naming, setNaming] = useState<string | null>(null);
+  // Efectos del clip que se está armando.
+  const [fx, setFx] = useState<FxState>(EMPTY_FX);
+  const [showFx, setShowFx] = useState(false);
+  // Fuentes de audio separadas: solo las tiene el video de la partida.
+  const sources = useMemo(() => (clip ? [] : (match.audio_tracks ?? []).filter((k) => k !== "mix")), [clip, match.audio_tracks]);
   useEffect(() => {
-    api.settings().then((s) => s.mobile_layout && setLayout({ ...DEFAULT_MOBILE_LAYOUT, ...s.mobile_layout })).catch(() => {});
+    api
+      .settings()
+      .then((s) => {
+        if (s.mobile_layout) setLayout({ ...DEFAULT_MOBILE_LAYOUT, ...s.mobile_layout });
+        setPresets(s.mobile_presets ?? []);
+        // Lo que Ajustes deja fuera de los clips arranca apagado.
+        setFx((f) => ({ ...f, muted: [...(s.clip_other_audio ? [] : ["other"]), ...(s.clip_mic_audio ? [] : ["mic"])] }));
+      })
+      .catch(() => {});
   }, []);
   const commitLayout = (l: MobileLayout) => {
     setLayout(l);
     api.setMobileLayout(l).catch((e) => toast.error(errText(e)));
   };
+  const savePresets = (next: MobilePreset[]) => {
+    setPresets(next);
+    api.setMobilePresets(next).catch((e) => toast.error(errText(e)));
+  };
+  const presetName = presets.find((p) => JSON.stringify({ ...DEFAULT_MOBILE_LAYOUT, ...p.layout }) === JSON.stringify(layout))?.name ?? "";
   const drag = useRef<"a" | "b" | "seek" | null>(null);
   const evLane = useRef<HTMLDivElement>(null);
   const menu = useContextMenu();
@@ -649,11 +726,8 @@ function Player(props: {
   }, [toggle, seek, markIn, markOut, fullscreen]);
 
   useEffect(() => {
-    if (video.current) {
-      video.current.muted = muted;
-      video.current.playbackRate = rate;
-    }
-  }, [muted, rate]);
+    if (video.current) video.current.muted = muted;
+  }, [muted]);
 
   const posToTime = (clientX: number) => {
     const r = bar.current!.getBoundingClientRect();
@@ -663,6 +737,12 @@ function Player(props: {
     // El clic derecho abre el menú de eventos; no mueve el cursor.
     if (e.button !== 0) return;
     e.stopPropagation();
+    // Un clic sobre un evento va a ese momento y lo deja marcado para crear el clip.
+    const ev = what === "seek" ? eventAt(e) : null;
+    if (ev) {
+      selectRange(ev.t - 10, ev.t + 4);
+      return;
+    }
     drag.current = what;
     bar.current?.setPointerCapture(e.pointerId);
     if (what === "seek") seek(posToTime(e.clientX));
@@ -677,10 +757,10 @@ function Player(props: {
   const pct = (s: number) => `${(Math.max(0, Math.min(s, dur)) / Math.max(dur, 0.001)) * 100}%`;
   const events = useMemo(() => (clip ? [] : match.events), [clip, match.events]);
 
-  /** Clic derecho sobre la pista de eventos: menú del evento más cercano (a menos de 10 px). */
-  const onLanesContextMenu = (e: React.MouseEvent) => {
+  /** Evento de la pista de eventos más cercano al puntero (a menos de 10 px). */
+  const eventAt = (e: { clientX: number; clientY: number }) => {
     const lane = evLane.current?.getBoundingClientRect();
-    if (!lane || !events.length || e.clientY < lane.top - 3 || e.clientY > lane.bottom + 3) return;
+    if (!lane || !events.length || e.clientY < lane.top - 3 || e.clientY > lane.bottom + 3) return null;
     const x = (s: number) => lane.left + (Math.max(0, Math.min(s, dur)) / Math.max(dur, 0.001)) * lane.width;
     let near: MatchEvent | null = null;
     let best = 10;
@@ -688,6 +768,12 @@ function Player(props: {
       const d = Math.abs(x(ev.t) - e.clientX);
       if (d <= best) [near, best] = [ev, d];
     }
+    return near;
+  };
+
+  /** Clic derecho sobre la pista de eventos: menú del evento. */
+  const onLanesContextMenu = (e: React.MouseEvent) => {
+    const near = eventAt(e);
     if (!near) return;
     const t = near.t;
     menu.open(
@@ -713,14 +799,24 @@ function Player(props: {
 
   // Sin tramo marcado, un clip se exporta entero (en otro formato o en vertical).
   const whole = !range && !!clip;
+  // Tramo que se va a exportar y, dentro de él, dónde cae la cámara lenta.
+  const span = range ?? (clip ? { a: 0, b: dur } : null);
+  const moment = span && fx.moment ? { a: span.a + fx.moment.start, b: Math.min(span.a + fx.moment.end, span.b) } : null;
+  const inMoment = !!moment && !!fx.moment && pos >= moment.a && pos < moment.b;
+  const zoom = inMoment ? fx.moment!.zoom : 1;
+  // La vista previa también va lenta dentro del efecto.
+  useEffect(() => {
+    if (video.current) video.current.playbackRate = rate * (inMoment ? fx.moment!.speed : 1);
+  }, [inMoment, rate, fx.moment]);
   const doExport = async () => {
     const span = range ?? (clip ? { a: 0, b: video.current?.duration || dur } : null);
     if (!span) return;
     setExporting(true);
     try {
-      await onExport({ start: span.a, end: span.b, title, quality, frame: canFrame ? frame : "horizontal" });
+      await onExport({ start: span.a, end: span.b, title, quality, frame: canFrame ? frame : "horizontal", fx: toFx(fx, sources) });
       setRange(null);
       setTitle("");
+      setFx((f) => ({ ...EMPTY_FX, muted: f.muted }));
     } catch (e) {
       toast.error(errText(e));
     } finally {
@@ -744,46 +840,48 @@ function Player(props: {
           onLoadedMetadata={(e) => setDur(e.currentTarget.duration)}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
+          style={!mobile && zoom > 1 ? { transform: `scale(${zoom})` } : undefined}
         />
         {mobile && <MobileOverlay video={video} layout={layout} onChange={setLayout} onCommit={commitLayout} />}
-        {mobile && <MobilePreview video={video} layout={layout} onChange={setLayout} onCommit={commitLayout} />}
+        {mobile && <MobilePreview video={video} layout={layout} texts={fx.texts} zoom={zoom} onChange={setLayout} onCommit={commitLayout} />}
+        {!mobile && span && <TextPreview video={video} texts={fx.texts} frame={canFrame ? frame : "horizontal"} />}
       </div>
 
       <div className="controls">
-        <button className="icon-btn" onClick={() => seek((video.current?.currentTime ?? 0) - 1 / 60)} aria-label="Cuadro anterior" title="Cuadro anterior (,)">
+        <button className="icon-btn" onClick={() => seek((video.current?.currentTime ?? 0) - 1 / 60)} aria-label={t("Cuadro anterior")} title={t("Cuadro anterior (,)")}>
           <Icon name="prev" size={16} />
         </button>
-        <button className="icon-btn play" onClick={toggle} aria-label={playing ? "Pausar" : "Reproducir"}>
+        <button className="icon-btn play" onClick={toggle} aria-label={playing ? t("Pausar") : t("Reproducir")}>
           <Icon name={playing ? "pause" : "play"} size={16} filled />
         </button>
-        <button className="icon-btn" onClick={() => seek((video.current?.currentTime ?? 0) + 1 / 60)} aria-label="Cuadro siguiente" title="Cuadro siguiente (.)">
+        <button className="icon-btn" onClick={() => seek((video.current?.currentTime ?? 0) + 1 / 60)} aria-label={t("Cuadro siguiente")} title={t("Cuadro siguiente (.)")}>
           <Icon name="next" size={16} />
         </button>
         <span className="time">
-          {fmtClock(t)}.{String(Math.floor((t % 1) * 100)).padStart(2, "0")} <span>/ {fmtClock(dur)}</span>
+          {fmtClock(pos)}.{String(Math.floor((pos % 1) * 100)).padStart(2, "0")} <span>/ {fmtClock(dur)}</span>
         </span>
         <span className="spacer" />
-        <button className="icon-btn bare" onClick={() => setMuted((x) => !x)} aria-label={muted ? "Activar sonido" : "Silenciar"}>
+        <button className="icon-btn bare" onClick={() => setMuted((x) => !x)} aria-label={muted ? t("Activar sonido") : t("Silenciar")}>
           <Icon name={muted ? "mute" : "volume"} />
         </button>
         <label className="sort" style={{ marginLeft: 0 }}>
-          Velocidad
+          {t("Velocidad")}
           <select value={rate} onChange={(e) => setRate(Number(e.target.value))}>
             {[0.25, 0.5, 1, 1.5, 2].map((r) => (
               <option key={r} value={r}>
-                {String(r).replace(".", ",")}×
+                {dec(String(r))}×
               </option>
             ))}
           </select>
         </label>
-        <button className="icon-btn" onClick={fullscreen} aria-label="Pantalla completa">
+        <button className="icon-btn" onClick={fullscreen} aria-label={t("Pantalla completa")}>
           <Icon name="fullscreen" size={16} />
         </button>
       </div>
 
-      <section className="editor" aria-label="Editor de línea de tiempo">
+      <section className="editor" aria-label={t("Editor de línea de tiempo")}>
         <div className="editor-top">
-          <span className="label">{clip ? "Recorte" : "Selección"}</span>
+          <span className="label">{clip ? t("Recorte") : t("Selección")}</span>
           {range ? (
             <>
               <span className="editor-range">
@@ -791,30 +889,30 @@ function Player(props: {
                 <i>→</i>
                 {fmtClock(range.b)}
               </span>
-              <span className="editor-len">{(range.b - range.a).toFixed(1).replace(".", ",")} s</span>
+              <span className="editor-len">{dec((range.b - range.a).toFixed(1))} s</span>
             </>
           ) : (
-            <span className="muted small">{clip ? "Clip completo. Marca un tramo para recortarlo." : "Marca el tramo que quieres convertir en clip."}</span>
+            <span className="muted small">{clip ? t("Clip completo. Marca un tramo para recortarlo.") : t("Marca el tramo que quieres convertir en clip.")}</span>
           )}
           <div className="editor-actions">
             {range ? (
               <>
                 <button className="btn ghost sm" onClick={markIn}>
-                  Entrada <kbd>I</kbd>
+                  {t("Entrada")} <kbd>I</kbd>
                 </button>
                 <button className="btn ghost sm" onClick={markOut}>
-                  Salida <kbd>O</kbd>
+                  {t("Salida")} <kbd>O</kbd>
                 </button>
                 <button className="btn ghost sm" onClick={() => (seek(range.a), video.current?.play())}>
-                  Previsualizar
+                  {t("Previsualizar")}
                 </button>
                 <button className="btn ghost sm" onClick={() => setRange(null)}>
-                  Cancelar
+                  {t("Cancelar")}
                 </button>
               </>
             ) : (
               <button className={`btn sm ${clip ? "ghost" : "primary"}`} onClick={newClip}>
-                <Icon name="scissors" size={15} /> {clip ? "Recortar" : "Nuevo clip"}
+                <Icon name="scissors" size={15} /> {clip ? t("Recortar") : t("Nuevo clip")}
               </button>
             )}
           </div>
@@ -822,28 +920,29 @@ function Player(props: {
 
         {mobile && (
           <p className="muted small mf-help">
-            Sobre el video: arrastra <b>Salud</b> y <b>Armas</b> hasta cubrir esas partes de tu HUD (la esquina de cada zona cambia su tamaño) y mueve <b>Encuadre</b> para elegir qué parte del juego
-            se ve. A la derecha, el resultado: arrástralo hacia arriba o abajo para mover la franja.
+            {t("Sobre el video: arrastra")} <b>{t("Salud")}</b> {t("y")} <b>{t("Armas")}</b> {t("hasta cubrir esas partes de tu HUD (la esquina de cada zona cambia su tamaño) y mueve")} <b>{t("Encuadre")}</b>{" "}
+            {t("para elegir qué parte del juego se ve. A la derecha, el resultado: arrástralo hacia arriba o abajo para mover la franja. Con")} <b>{t("+ Minimapa")}</b> {t("y")} <b>{t("+ Zona")}</b>{" "}
+            {t("sumas piezas sueltas: se mueven arrastrándolas en el resultado y se agrandan desde su esquina.")}
           </p>
         )}
         {(range || clip) && (
           <div className="export-bar">
-            <span className="label">Exportar</span>
+            <span className="label">{t("Exportar")}</span>
             {canFrame && (
-              <div className="seg" role="group" aria-label="Encuadre">
+              <div className="seg" role="group" aria-label={t("Encuadre")}>
                 <button className={frame === "horizontal" ? "on" : ""} aria-pressed={frame === "horizontal"} onClick={() => setFrame("horizontal")}>
-                  Horizontal
+                  {t("Horizontal")}
                 </button>
-                <button className={frame === "vertical" ? "on" : ""} aria-pressed={frame === "vertical"} onClick={() => setFrame("vertical")} title="Recorte central 9:16 con el marcador de la partida">
-                  Vertical 9:16
+                <button className={frame === "vertical" ? "on" : ""} aria-pressed={frame === "vertical"} onClick={() => setFrame("vertical")} title={t("Recorte central 9:16 con el marcador de la partida")}>
+                  {t("Vertical 9:16")}
                 </button>
                 <button
                   className={frame === "mobile" ? "on" : ""}
                   aria-pressed={frame === "mobile"}
                   onClick={() => setFrame("mobile")}
-                  title="9:16 con la salud y las armas en una franja arriba, para TikTok, Reels y Shorts"
+                  title={t("9:16 con la salud y las armas en una franja arriba, para TikTok, Reels y Shorts")}
                 >
-                  Móvil
+                  {t("Móvil")}
                 </button>
               </div>
             )}
@@ -853,39 +952,101 @@ function Player(props: {
                   className="btn ghost sm"
                   aria-pressed={layout.two_rows}
                   onClick={() => commitLayout({ ...layout, two_rows: !layout.two_rows })}
-                  title="La salud arriba y las armas abajo, más grandes"
+                  title={t("La salud arriba y las armas abajo, más grandes")}
                 >
-                  {layout.two_rows ? "HUD en una fila" : "HUD en dos filas"}
+                  {layout.two_rows ? t("HUD en una fila") : t("HUD en dos filas")}
                 </button>
-                <button className="btn ghost sm" onClick={() => commitLayout(DEFAULT_MOBILE_LAYOUT)} title="Vuelve a las zonas del HUD de Fortnite a escala 100 %">
-                  Restablecer zonas
+                <button className="btn ghost sm" disabled={(layout.extras ?? []).some((e) => e.label === MINIMAP_EXTRA.label)} onClick={() => commitLayout({ ...layout, extras: [...(layout.extras ?? []), MINIMAP_EXTRA] })} title={t("Agrega el minimapa como una pieza suelta que puedes mover")}>
+                  {t("+ Minimapa")}
                 </button>
+                <button
+                  className="btn ghost sm"
+                  disabled={(layout.extras ?? []).length >= 4}
+                  onClick={() => commitLayout({ ...layout, extras: [...(layout.extras ?? []), { ...FREE_EXTRA, label: `Zona ${(layout.extras ?? []).length + 1}` }] })}
+                  title={t("Agrega otra parte de la pantalla (el contador de eliminaciones, la brújula…)")}
+                >
+                  {t("+ Zona")}
+                </button>
+                <label className="sort" style={{ marginLeft: 0 }}>
+                  {t("Plantilla")}
+                  <select
+                    value={presetName}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "__default") commitLayout(DEFAULT_MOBILE_LAYOUT);
+                      else {
+                        const p = presets.find((p) => p.name === v);
+                        if (p) commitLayout({ ...DEFAULT_MOBILE_LAYOUT, ...p.layout });
+                      }
+                    }}
+                  >
+                    {!presetName && <option value="">{t("Sin guardar")}</option>}
+                    {presets.map((p) => (
+                      <option key={p.name} value={p.name}>
+                        {p.name}
+                      </option>
+                    ))}
+                    <option value={"__default"}>{t("Fortnite 100 % (restablecer)")}</option>
+                  </select>
+                </label>
+                {presetName ? (
+                  <button className="btn ghost sm" onClick={() => savePresets(presets.filter((p) => p.name !== presetName))} title={t('Borra la plantilla "{name}"', { name: presetName })}>
+                    {t("Borrar plantilla")}
+                  </button>
+                ) : (
+                  naming === null ? (
+                    <button className="btn ghost sm" title={t("Guarda estas zonas con un nombre para volver a usarlas")} onClick={() => setNaming(t("Plantilla {n}", { n: presets.length + 1 }))}>
+                      {t("Guardar plantilla")}
+                    </button>
+                  ) : (
+                    <form
+                      className="preset-form"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const name = naming.trim();
+                        if (name) savePresets([...presets.filter((p) => p.name !== name), { name, layout }]);
+                        setNaming(null);
+                      }}
+                    >
+                      <input className="input" autoFocus aria-label={t("Nombre de la plantilla")} value={naming} maxLength={30} onChange={(e) => setNaming(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setNaming(null)} />
+                      <button className="btn primary sm" type="submit" disabled={!naming.trim()}>
+                        {t("Guardar")}
+                      </button>
+                      <button className="btn ghost sm" type="button" onClick={() => setNaming(null)}>
+                        {t("Cancelar")}
+                      </button>
+                    </form>
+                  )
+                )}
               </>
             )}
             <label className="sort" style={{ marginLeft: 0 }}>
-              Calidad
+              {t("Calidad")}
               <select value={quality} onChange={(e) => setQuality(e.target.value as Quality)}>
                 {(["share", "small", "original"] as Quality[]).map((q) => (
                   <option key={q} value={q}>
-                    {QUALITY_LABEL[q]}
+                    {t(QUALITY_LABEL[q])}
                   </option>
                 ))}
               </select>
             </label>
-            <input className="input" aria-label="Nombre del clip" placeholder="Nombre del clip" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} />
+            <button className={`btn sm ${showFx || hasFx(fx) ? "light" : "ghost"}`} aria-expanded={showFx} onClick={() => setShowFx((v) => !v)} title={t("Texto, cámara lenta, zoom, música y qué audio lleva el clip")}>
+              <Icon name="sliders" size={15} /> {t("Efectos")}{hasFx(fx) ? " ·" : ""}
+            </button>
+            <input className="input" aria-label={t("Nombre del clip")} placeholder={t("Nombre del clip")} value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} />
             <button
               className="btn primary sm"
               disabled={exporting || busy}
-              title={busy && !exporting ? "Espera a que termine el paso en curso" : undefined}
+              title={busy && !exporting ? t("Espera a que termine el paso en curso") : undefined}
               onClick={doExport}
             >
               {exporting ? (
                 <>
-                  <span className="spinner" /> Exportando…
+                  <span className="spinner" /> {t("Exportando…")}
                 </>
               ) : (
                 <>
-                  <Icon name="film" size={15} /> {whole ? "Exportar clip completo" : "Exportar clip"}
+                  <Icon name="film" size={15} /> {whole ? t("Exportar clip completo") : t("Exportar clip")}
                 </>
               )}
             </button>
@@ -894,21 +1055,21 @@ function Player(props: {
 
         <div className="tl">
           <div className="tl-labels" aria-hidden>
-            <span>TIEMPO</span>
-            <span>EVENTOS</span>
-            <span>CLIPS</span>
-            <span>{clip ? "CLIP" : "PARTIDA"}</span>
+            <span>{t("TIEMPO")}</span>
+            <span>{t("EVENTOS")}</span>
+            <span>{t("CLIPS")}</span>
+            <span>{clip ? t("CLIP") : t("PARTIDA")}</span>
           </div>
           <div
             className="tl-lanes"
             ref={bar}
             role="slider"
             tabIndex={0}
-            aria-label="Posición"
+            aria-label={t("Posición")}
             aria-valuemin={0}
             aria-valuemax={Math.round(dur)}
-            aria-valuenow={Math.round(t)}
-            aria-valuetext={fmtClock(t)}
+            aria-valuenow={Math.round(pos)}
+            aria-valuetext={fmtClock(pos)}
             onPointerDown={(e) => onPointerDown(e, "seek")}
             onPointerMove={onPointerMove}
             onPointerUp={() => (drag.current = null)}
@@ -929,7 +1090,7 @@ function Player(props: {
             </div>
             <div className="lane lane-events" ref={evLane}>
               {events.map((e, i) => (
-                <span key={i} className={`ev ${e.kind}`} style={{ left: pct(e.t), background: EVENT_COLORS[e.kind] }} title={`${e.label} · ${fmtClock(e.t)}`} />
+                <span key={i} className={`ev ${e.kind}`} style={{ left: pct(e.t), background: EVENT_COLORS[e.kind] }} title={`${tr(e.label)} · ${fmtClock(e.t)}\n${t("Clic: ir a este momento y marcarlo para crear un clip")}`} />
               ))}
             </div>
             <div className="lane lane-clips">
@@ -939,17 +1100,17 @@ function Player(props: {
                   type="button"
                   className="cl"
                   style={{ left: pct(c.start), width: pct(c.end - c.start) }}
-                  title={`${c.title} · ${fmtClock(c.start)} – ${fmtClock(c.end)}\nClic: ir a este momento y marcarlo para crear un clip`}
+                  title={`${tr(c.title)} · ${fmtClock(c.start)} – ${fmtClock(c.end)}\n${t("Clic: ir a este momento y marcarlo para crear un clip")}`}
                   // Sin esto, la pista toma el clic como un salto y empieza a arrastrar el cursor.
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={() => selectRange(c.start, c.end)}
                 >
-                  {c.title}
+                  {tr(c.title)}
                 </button>
               ))}
             </div>
             <div className="lane lane-track">
-              <div className="played" style={{ width: pct(t) }} />
+              <div className="played" style={{ width: pct(pos) }} />
             </div>
 
             {range && (
@@ -961,21 +1122,24 @@ function Player(props: {
                 <span className="tl-handle b" style={{ left: pct(range.b) }} onPointerDown={(e) => onPointerDown(e, "b")} />
               </>
             )}
-            <span className="tl-head" style={{ left: pct(t) }} />
+            {moment && <span className="tl-fx" style={{ left: pct(moment.a), width: pct(moment.b - moment.a) }} title={t("Cámara lenta / zoom")} />}
+            <span className="tl-head" style={{ left: pct(pos) }} />
             {hover !== null && !drag.current && (
               <span className="tl-hover" style={{ left: edgeSafe(pct(hover)) }}>
                 {fmtClock(hover)}
               </span>
             )}
-            <span className="tl-head-label" style={{ left: edgeSafe(pct(t)) }}>
-              {fmtClock(t)}
+            <span className="tl-head-label" style={{ left: edgeSafe(pct(pos)) }}>
+              {fmtClock(pos)}
             </span>
           </div>
         </div>
 
+        {showFx && span && <FxPanel fx={fx} onChange={setFx} sources={sources} length={span.b - span.a} now={pos - span.a} />}
+
         <div className="legend">
           <span>
-            <kbd>I</kbd> / <kbd>O</kbd> entrada y salida
+            <kbd>I</kbd> / <kbd>O</kbd> {t("entrada y salida")}
           </span>
           <span>
             <kbd>← →</kbd> 5 s
@@ -984,13 +1148,13 @@ function Player(props: {
             <kbd>⇧ ← →</kbd> 1 s
           </span>
           <span>
-            <kbd>, .</kbd> cuadro a cuadro
+            <kbd>, .</kbd> {t("cuadro a cuadro")}
           </span>
           <span>
-            <kbd>Espacio</kbd> pausa
+            <kbd>{t("Espacio")}</kbd> {t("pausa")}
           </span>
           <span>
-            <kbd>F</kbd> pantalla completa
+            <kbd>F</kbd> {t("pantalla completa")}
           </span>
         </div>
       </section>

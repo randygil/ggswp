@@ -16,6 +16,8 @@ use crate::library::{self, Clip, MatchEvent, MatchMeta, MatchStatus};
 
 /// Duración máxima del resumen.
 const REEL_MAX_S: f64 = 75.0;
+/// Duración máxima del resumen semanal.
+const WEEK_MAX_S: f64 = 90.0;
 /// Un tramo más largo se recorta por el principio: las eliminaciones quedan al final.
 const SEGMENT_MAX_S: f64 = 30.0;
 /// Fundido a negro al salir de cada momento y desde negro al entrar (0,3 s entre momentos).
@@ -42,19 +44,7 @@ pub fn reel_windows(events: &[MatchEvent], duration: f64) -> Vec<(f64, f64)> {
     for w in &mut merged {
         w.0 = w.0.max(w.1 - SEGMENT_MAX_S);
     }
-    let score = |s: f64, e: f64| -> f64 {
-        events
-            .iter()
-            .filter(|ev| ev.t >= s && ev.t <= e)
-            .map(|ev| match ev.kind.as_str() {
-                "victory" => 100.0,
-                "kill" => 10.0,
-                "knock" | "highlight" => 3.0,
-                "chest" => 0.5,
-                _ => 0.0,
-            })
-            .sum()
-    };
+    let score = |s: f64, e: f64| window_score(events, s, e);
     // Primero los de más peso; a igual peso, los más tardíos (el final de la partida).
     let mut ranked: Vec<(f64, f64, f64)> = merged.into_iter().map(|(s, e)| (s, e, score(s, e))).collect();
     ranked.sort_by(|a, b| b.2.total_cmp(&a.2).then(b.0.total_cmp(&a.0)));
@@ -68,6 +58,30 @@ pub fn reel_windows(events: &[MatchEvent], duration: f64) -> Vec<(f64, f64)> {
     }
     picked.sort_by(|a, b| a.0.total_cmp(&b.0));
     picked
+}
+
+/// Peso de un tramo: la victoria manda, después las eliminaciones (más si fueron varias
+/// seguidas, de lejos, una remontada o la que dio la victoria) y por último los derribos.
+pub fn window_score(events: &[MatchEvent], s: f64, e: f64) -> f64 {
+    let inside: Vec<&MatchEvent> = events.iter().filter(|ev| ev.t >= s && ev.t <= e).collect();
+    let kills = inside.iter().filter(|ev| ev.kind == "kill").count();
+    let base: f64 = inside
+        .iter()
+        .map(|ev| match ev.kind.as_str() {
+            "victory" => 100.0,
+            "kill" => {
+                let far = ev.distance_m.filter(|d| *d >= 100.0).map_or(0.0, |d| 5.0 + d / 50.0);
+                let special = if ev.label.starts_with("Remontada") || ev.label.contains("de la victoria") { 8.0 } else { 0.0 };
+                let bot = if ev.label.contains("(bot)") { -4.0 } else { 0.0 };
+                10.0 + far + special + bot
+            }
+            "knock" | "highlight" => 3.0,
+            "chest" => 0.5,
+            _ => 0.0,
+        })
+        .sum();
+    // Varias eliminaciones en el mismo tramo valen más que sueltas.
+    base + if kills >= 2 { 6.0 * (kills - 1) as f64 } else { 0.0 }
 }
 
 pub fn reel_title(kills: u32, victory: bool) -> String {
@@ -107,20 +121,6 @@ pub fn vertical_filter(badge: Option<&(String, String)>, font_file: &str) -> Str
     vf
 }
 
-/// Filtros de un tramo del resumen: fps constante, la escala del formato de salida (`scale`)
-/// y fundidos de entrada y salida.
-fn segment_filter(dur: f64, fps: u32, scale: &[String], audio: bool) -> String {
-    let out = (dur - FADE_S).max(0.0);
-    let scale: String = scale.iter().map(|f| format!("{f},")).collect();
-    let mut f = format!("[0:v]setpts=PTS-STARTPTS,fps={fps},{scale}format=yuv420p,fade=t=in:st=0:d={FADE_S},fade=t=out:st={out:.3}:d={FADE_S}[v]");
-    if audio {
-        f.push_str(&format!(
-            ";[0:a]aresample=async=1:first_pts=0,apad,atrim=0:{dur:.3},asetpts=PTS-STARTPTS,afade=t=in:st=0:d={FADE_S},afade=t=out:st={out:.3}:d={FADE_S}[a]"
-        ));
-    }
-    f
-}
-
 pub(crate) fn ffmpeg_cmd(ffmpeg: &Path) -> Command {
     let mut c = Command::new(ffmpeg);
     c.args(["-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y"]);
@@ -157,16 +157,6 @@ pub(crate) fn run_progress(cmd: &mut Command, on_secs: &mut dyn FnMut(f64)) -> R
     Ok(())
 }
 
-fn has_audio(ffmpeg: &Path, video: &Path) -> bool {
-    Command::new(ffmpeg)
-        .args(["-hide_banner", "-i"])
-        .arg(video)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stderr).contains("Audio:"))
-        .unwrap_or(false)
-}
-
 /// Carpeta temporal que se borra al salir.
 struct TempDir(PathBuf);
 
@@ -176,32 +166,59 @@ impl Drop for TempDir {
     }
 }
 
+/// Un tramo de un video para unir con otros.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Seg {
+    pub src: PathBuf,
+    pub start: f64,
+    pub dur: f64,
+}
+
+/// Filtros de un tramo: fps constante, encajado en `dims` (con bandas si la proporción es
+/// otra), los filtros del formato (`extra`) y fundidos de entrada y salida. `audio` es la
+/// entrada de audio del tramo (con sus filtros previos).
+fn segment_filter(dur: f64, fps: u32, (w, h): (u32, u32), extra: &[String], audio: &(String, String)) -> String {
+    let out = (dur - FADE_S).max(0.0);
+    let extra: String = extra.iter().map(|f| format!("{f},")).collect();
+    let fit = if w > 0 { format!("scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,") } else { String::new() };
+    format!(
+        "[0:v:0]setpts=PTS-STARTPTS,fps={fps},{fit}{extra}format=yuv420p,fade=t=in:st=0:d={FADE_S},fade=t=out:st={out:.3}:d={FADE_S}[v];\
+         {}{}aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo,apad,atrim=0:{dur:.3},asetpts=PTS-STARTPTS,afade=t=in:st=0:d={FADE_S},afade=t=out:st={out:.3}:d={FADE_S}[a]",
+        audio.0, audio.1
+    )
+}
+
 /// Codifica cada tramo por separado (con fundidos) y los une sin recodificar el video. El
 /// audio va en PCM en los intermedios y se codifica una sola vez al final, así no se corre
-/// en las uniones.
-pub fn render_reel(ffmpeg: &Path, video: &Path, windows: &[(f64, f64)], quality: Quality, opts: &VideoOptions, out: &Path, on_pct: &dyn Fn(f32)) -> Result<()> {
-    let audio = has_audio(ffmpeg, video);
-    let src = library::probe(ffmpeg, video).unwrap_or_default();
+/// en las uniones. Todos salen al tamaño del primero. `tracks` son las fuentes de audio a
+/// incluir de las grabaciones con pistas separadas.
+pub fn render_segments(ffmpeg: &Path, segs: &[Seg], quality: Quality, opts: &VideoOptions, tracks: Option<&[String]>, out: &Path, on_pct: &dyn Fn(f32)) -> Result<()> {
+    let first = segs.first().context("no hay tramos para unir")?;
     let tmp = TempDir(std::env::temp_dir().join(format!("ggswp-{}", library::new_id("reel"))));
     std::fs::create_dir_all(&tmp.0)?;
-    let total: f64 = windows.iter().map(|(s, e)| e - s).sum::<f64>().max(0.1);
-    // Los tramos ya salen a `opts.fps`: el plan solo aporta la escala y el codificador.
-    let plan = export::plan(quality, (src.width, src.height), opts.fps as f64, total, opts);
+    let total: f64 = segs.iter().map(|s| s.dur).sum::<f64>().max(0.1);
+    let base = library::probe(ffmpeg, &first.src).unwrap_or_default();
+    let dims = export::output_dims(quality, (base.width, base.height));
+    // Los tramos ya salen a `opts.fps` y a `dims`: del plan se usa el resto (fps del formato
+    // liviano) y el codificador.
+    let plan = export::plan(quality, (base.width, base.height), opts.fps as f64, total, opts);
+    let extra: Vec<String> = plan.filters.iter().filter(|f| !f.starts_with("scale=")).cloned().collect();
     let mut done = 0.0;
     let mut list = String::new();
-    for (i, &(start, end)) in windows.iter().enumerate() {
-        let dur = end - start;
+    for (i, seg) in segs.iter().enumerate() {
         let name = format!("seg{i:02}.mkv");
+        let names = library::probe(ffmpeg, &seg.src).map(|p| p.audio).unwrap_or_default();
         let mut cmd = ffmpeg_cmd(ffmpeg);
-        cmd.args(["-ss", &format!("{start:.3}"), "-t", &format!("{dur:.3}"), "-i"])
-            .arg(video)
-            .args(["-filter_complex", &segment_filter(dur, opts.fps, &plan.filters, audio), "-map", "[v]"]);
-        if audio {
-            cmd.args(["-map", "[a]", "-c:a", "pcm_s16le"]);
-        }
+        cmd.args(["-ss", &format!("{:.3}", seg.start), "-t", &format!("{:.3}", seg.dur), "-i"]).arg(&seg.src);
+        // Un tramo sin audio lleva silencio: todos los intermedios tienen las mismas pistas.
+        let audio = export::audio_source(&names, tracks).unwrap_or_else(|| {
+            cmd.args(["-f", "lavfi", "-t", &format!("{:.3}", seg.dur), "-i", "anullsrc=r=48000:cl=stereo"]);
+            (String::new(), "[1:a]".into())
+        });
+        cmd.args(["-filter_complex", &segment_filter(seg.dur, opts.fps, dims, &extra, &audio), "-map", "[v]", "-map", "[a]", "-c:a", "pcm_s16le"]);
         cmd.args(&plan.video).arg(tmp.0.join(&name));
-        run_progress(&mut cmd, &mut |t| on_pct(((done + t.min(dur)) / total * 95.0) as f32))?;
-        done += dur;
+        run_progress(&mut cmd, &mut |t| on_pct(((done + t.min(seg.dur)) / total * 95.0) as f32))?;
+        done += seg.dur;
         list.push_str(&format!("file '{name}'\n"));
     }
     let list_path = tmp.0.join("list.txt");
@@ -215,6 +232,12 @@ pub fn render_reel(ffmpeg: &Path, video: &Path, windows: &[(f64, f64)], quality:
         .arg(out);
     run_progress(&mut cmd, &mut |t| on_pct((95.0 + t / total * 5.0) as f32))?;
     Ok(())
+}
+
+/// Resumen de una partida: sus tramos unidos.
+pub fn render_reel(ffmpeg: &Path, video: &Path, windows: &[(f64, f64)], quality: Quality, opts: &VideoOptions, tracks: Option<&[String]>, out: &Path, on_pct: &dyn Fn(f32)) -> Result<()> {
+    let segs: Vec<Seg> = windows.iter().map(|&(s, e)| Seg { src: video.to_path_buf(), start: s, dur: e - s }).collect();
+    render_segments(ffmpeg, &segs, quality, opts, tracks, out, on_pct)
 }
 
 pub(crate) fn clear_step(app: &AppHandle, shared: &Shared, id: &str) {
@@ -256,7 +279,7 @@ pub fn create_reel(app: &AppHandle, shared: &Shared, id: &str) -> Result<(Clip, 
     shared.set_step(app, id, "Creando resumen", Some(0.0));
     let started = std::time::Instant::now();
     let quality = Quality::from_setting(&settings.clip_quality);
-    let result = render_reel(&ffmpeg, &video, &windows, quality, &engine::video_options(&settings, 0), &out, &|p| {
+    let result = render_reel(&ffmpeg, &video, &windows, quality, &engine::video_options(&settings, 0), Some(&export::default_tracks(&settings)), &out, &|p| {
         shared.set_step(app, id, "Creando resumen", Some(p))
     });
     clear_step(app, shared, id);
@@ -280,6 +303,7 @@ pub fn create_reel(app: &AppHandle, shared: &Shared, id: &str) -> Result<(Clip, 
         created_at: chrono::Utc::now(),
         drive: None,
         offloaded: false,
+        best: false,
     };
     // Se vuelve a leer: la partida pudo cambiar mientras se codificaba.
     let mut m = lib.load(id)?;
@@ -291,6 +315,134 @@ pub fn create_reel(app: &AppHandle, shared: &Shared, id: &str) -> Result<(Clip, 
     m.clips.push(clip.clone());
     lib.save(&m)?;
     Ok((clip, old))
+}
+
+/// Une varios clips de una partida, en el orden dado, en un clip nuevo.
+pub fn join_clips(app: &AppHandle, shared: &Shared, id: &str, clip_ids: &[String], title: &str) -> Result<Clip> {
+    let m = local_match(shared, id)?;
+    if clip_ids.len() < 2 {
+        bail!("Elige al menos dos clips para unir");
+    }
+    let settings = shared.settings.read().unwrap().clone();
+    let ffmpeg = engine::ffmpeg_path(app, &settings);
+    let lib = shared.library();
+    let mut segs = Vec::new();
+    for cid in clip_ids {
+        let c = m.clips.iter().find(|c| &c.id == cid).with_context(|| format!("clip {cid} no encontrado"))?;
+        if c.offloaded {
+            bail!("El clip \"{}\" está solo en Drive: descárgalo primero", c.title);
+        }
+        let src = lib.file(id, &c.file);
+        let dur = library::probe(&ffmpeg, &src)?.duration;
+        segs.push(Seg { src, start: 0.0, dur });
+    }
+    let cid = library::new_id("join");
+    let file = format!("clips/{cid}.mp4");
+    let out = lib.file(id, &file);
+    std::fs::create_dir_all(lib.file(id, "clips"))?;
+    let label = "Uniendo clips";
+    shared.set_step(app, id, label, Some(0.0));
+    // Los clips ya traen el audio elegido al crearlos: no se filtra de nuevo.
+    let result = render_segments(&ffmpeg, &segs, Quality::from_setting(&settings.clip_quality), &engine::video_options(&settings, 0), None, &out, &|p| shared.set_step(app, id, label, Some(p)));
+    clear_step(app, shared, id);
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&out);
+        return Err(e);
+    }
+    let length: f64 = segs.iter().map(|s| s.dur).sum();
+    let thumb = format!("clips/{cid}.jpg");
+    let thumb_ok = library::thumbnail(&ffmpeg, &out, (segs[0].dur / 2.0).min(3.0), &lib.file(id, &thumb)).is_ok();
+    let title = if title.trim().is_empty() { format!("Unión de {} clips", segs.len()) } else { title.trim().to_string() };
+    let clip = Clip { id: cid, file, thumb: thumb_ok.then_some(thumb), start: 0.0, end: length, title, kind: "join".into(), created_at: chrono::Utc::now(), ..Default::default() };
+    let mut m = lib.load(id)?;
+    m.clips.push(clip.clone());
+    lib.save(&m)?;
+    Ok(clip)
+}
+
+/// Mejores tramos de varias partidas, hasta `max` segundos, en orden cronológico.
+pub fn weekly_segments(matches: &[(PathBuf, &MatchMeta)], max: f64) -> Vec<Seg> {
+    // (puntaje, orden de partida, inicio, fin, video)
+    let mut ranked: Vec<(f64, usize, f64, f64, &PathBuf)> = Vec::new();
+    for (i, (video, m)) in matches.iter().enumerate() {
+        for (s, e, ..) in library::clip_windows(&m.events, 8.0, 3.0, m.duration_s, false) {
+            let s = s.max(e - SEGMENT_MAX_S);
+            if e - s >= 1.0 {
+                ranked.push((window_score(&m.events, s, e), i, s, e, video));
+            }
+        }
+    }
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut picked = Vec::new();
+    let mut total = 0.0;
+    for r in ranked {
+        if total + (r.3 - r.2) <= max {
+            total += r.3 - r.2;
+            picked.push(r);
+        }
+    }
+    picked.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.total_cmp(&b.2)));
+    picked.into_iter().map(|(_, _, s, e, video)| Seg { src: (*video).clone(), start: s, dur: e - s }).collect()
+}
+
+/// Clave del paso "resumen semanal" en el estado (no pertenece a ninguna partida).
+pub const WEEKLY_STEP: &str = "weekly";
+
+/// Un video con lo mejor de los últimos 7 días. Queda en la galería como una entrada propia.
+pub fn create_weekly(app: &AppHandle, shared: &Shared) -> Result<MatchMeta> {
+    let settings = shared.settings.read().unwrap().clone();
+    let ffmpeg = engine::ffmpeg_path(app, &settings);
+    let lib = shared.library();
+    let since = chrono::Utc::now() - chrono::Duration::days(7);
+    let mut all: Vec<MatchMeta> = lib
+        .list()
+        .into_iter()
+        .filter(|m| m.status == MatchStatus::Ready && !m.offloaded && m.game.is_none() && m.created_at >= since && !m.id.ends_with("_week") && !m.id.ends_with("_clip"))
+        .collect();
+    all.sort_by_key(|m| m.created_at);
+    let sources: Vec<(PathBuf, &MatchMeta)> = all.iter().map(|m| (lib.file(&m.id, m.video.as_deref().unwrap_or("match.mp4")), m)).filter(|(p, _)| p.exists()).collect();
+    let segs = weekly_segments(&sources, WEEK_MAX_S);
+    if segs.is_empty() {
+        bail!("No hay momentos para un resumen: en los últimos 7 días no hubo eliminaciones ni victorias en las partidas que están en la PC");
+    }
+    let used: Vec<&MatchMeta> = sources.iter().filter(|(p, _)| segs.iter().any(|s| &s.src == p)).map(|(_, m)| *m).collect();
+    let id = format!("{}_week", chrono::Local::now().format("%Y-%m-%d_%H-%M-%S"));
+    std::fs::create_dir_all(lib.dir(&id))?;
+    let out = lib.file(&id, "match.mp4");
+    let label = "Creando el resumen semanal";
+    shared.set_step(app, WEEKLY_STEP, label, Some(0.0));
+    let result = render_segments(&ffmpeg, &segs, Quality::from_setting(&settings.clip_quality), &engine::video_options(&settings, 0), Some(&export::default_tracks(&settings)), &out, &|p| {
+        shared.set_step(app, WEEKLY_STEP, label, Some(p))
+    });
+    clear_step(app, shared, WEEKLY_STEP);
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(lib.dir(&id));
+        return Err(e);
+    }
+    let p = library::probe(&ffmpeg, &out)?;
+    let thumb = library::thumbnail(&ffmpeg, &out, (segs[0].dur - 3.5).max(0.0), &lib.file(&id, "thumb.jpg")).ok().map(|_| "thumb.jpg".to_string());
+    let day = |m: &MatchMeta| m.created_at.with_timezone(&chrono::Local).format("%d/%m").to_string();
+    let title = format!("Lo mejor de la semana · {} – {}", day(used[0]), day(used[used.len() - 1]));
+    let now = chrono::Utc::now();
+    let meta = MatchMeta {
+        id: id.clone(),
+        created_at: now,
+        title: title.clone(),
+        duration_s: p.duration,
+        width: p.width,
+        height: p.height,
+        size_bytes: std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0),
+        video: Some("match.mp4".into()),
+        thumb: thumb.clone(),
+        kills: used.iter().map(|m| m.kills).sum(),
+        victory: used.iter().any(|m| m.victory),
+        clips: vec![Clip { id: "week".into(), file: "match.mp4".into(), thumb, start: 0.0, end: p.duration, title, kind: "reel".into(), created_at: now, ..Default::default() }],
+        status: MatchStatus::Ready,
+        ..Default::default()
+    };
+    lib.save(&meta)?;
+    log::info!("{id}: resumen semanal de {} momentos de {} partidas ({:.0} s)", segs.len(), used.len(), p.duration);
+    Ok(meta)
 }
 
 /// Versión vertical 9:16 de un clip (o del resumen), con el marcador de la partida.
@@ -310,7 +462,7 @@ pub fn create_vertical(app: &AppHandle, shared: &Shared, id: &str, clip_id: &str
     let cid = library::new_id("vert");
     let file = format!("clips/{cid}.mp4");
     let out = lib.file(id, &file);
-    let job = export::Job { src: &input, cut: None, quality: Quality::from_setting(&settings.clip_quality), vertical: true, badge: vertical_badge(m.kills, m.victory), mobile: None };
+    let job = export::Job { src: &input, cut: None, quality: Quality::from_setting(&settings.clip_quality), vertical: true, badge: vertical_badge(m.kills, m.victory), mobile: None, fx: Default::default() };
     shared.set_step(app, id, "Creando versión vertical", Some(0.0));
     let started = std::time::Instant::now();
     let result = export::render(&ffmpeg, &job, &engine::video_options(&settings, 0), &out, &|p| shared.set_step(app, id, "Creando versión vertical", Some(p)));
@@ -333,6 +485,7 @@ pub fn create_vertical(app: &AppHandle, shared: &Shared, id: &str, clip_id: &str
         created_at: chrono::Utc::now(),
         drive: None,
         offloaded: false,
+        best: false,
     };
     let mut m = lib.load(id)?;
     m.clips.push(clip.clone());
@@ -386,6 +539,39 @@ mod tests {
     }
 
     #[test]
+    fn score_prefers_multi_kills_long_shots_and_real_players() {
+        let kill = |t: f64, label: &str, d: Option<f64>| MatchEvent { t, kind: "kill".into(), label: label.into(), distance_m: d };
+        let one = window_score(&[kill(10.0, "Eliminación", None)], 0.0, 20.0);
+        let bot = window_score(&[kill(10.0, "Eliminación (bot)", None)], 0.0, 20.0);
+        let far = window_score(&[kill(10.0, "Tiro largo · 150 m", Some(150.0))], 0.0, 20.0);
+        let two = window_score(&[kill(10.0, "Eliminación", None), kill(14.0, "Eliminación", None)], 0.0, 20.0);
+        let comeback = window_score(&[kill(10.0, "Remontada · eliminación tras un derribo", None)], 0.0, 20.0);
+        assert!(bot < one && one < far && far < two, "{bot} {one} {far} {two}");
+        assert!(comeback > one);
+        assert!(window_score(&[ev(5.0, "victory")], 0.0, 20.0) > two);
+        assert_eq!(window_score(&[kill(30.0, "Eliminación", None)], 0.0, 20.0), 0.0);
+    }
+
+    #[test]
+    fn weekly_takes_the_best_of_every_match_in_order() {
+        let m = |kills: &[f64], victory: Option<f64>| {
+            let mut events: Vec<_> = kills.iter().map(|&t| ev(t, "kill")).collect();
+            events.extend(victory.map(|t| ev(t, "victory")));
+            MatchMeta { duration_s: 2000.0, events, ..Default::default() }
+        };
+        let (a, b) = (m(&[100.0, 500.0], None), m(&[300.0], Some(900.0)));
+        let sources = vec![(PathBuf::from("a.mp4"), &a), (PathBuf::from("b.mp4"), &b)];
+        let all = weekly_segments(&sources, 90.0);
+        let seg = |src: &str, start: f64| Seg { src: PathBuf::from(src), start, dur: 11.0 };
+        assert_eq!(all, vec![seg("a.mp4", 92.0), seg("a.mp4", 492.0), seg("b.mp4", 292.0), seg("b.mp4", 892.0)]);
+        // Si no entra todo, queda lo más fuerte (la victoria primero) y sigue en orden.
+        let short = weekly_segments(&sources, 25.0);
+        assert_eq!(short.len(), 2);
+        assert_eq!(short[1], seg("b.mp4", 892.0));
+        assert!(weekly_segments(&[], 90.0).is_empty());
+    }
+
+    #[test]
     fn reel_empty_without_moments() {
         assert!(reel_windows(&[ev(10.0, "bus"), ev(90.0, "death")], 100.0).is_empty());
     }
@@ -419,7 +605,7 @@ mod tests {
         let length: f64 = windows.iter().map(|(s, e)| e - s).sum();
         let reel = tmp.0.join("reel.mp4");
         let t = std::time::Instant::now();
-        render_reel(ffmpeg, &lib.file(&m.id, "match.mp4"), &windows, Quality::Share, &opts, &reel, &|_| {}).unwrap();
+        render_reel(ffmpeg, &lib.file(&m.id, "match.mp4"), &windows, Quality::Share, &opts, None, &reel, &|_| {}).unwrap();
         println!("{}: resumen {windows:?} ({length:.1} s) en {:.1} s", m.id, t.elapsed().as_secs_f64());
         let p = library::probe(ffmpeg, &reel).unwrap();
         println!("resumen: {}x{}, {:.1} MB", p.width, p.height, std::fs::metadata(&reel).unwrap().len() as f64 / 1e6);
@@ -427,7 +613,7 @@ mod tests {
         assert!(export::is_light(&p, std::fs::metadata(&reel).unwrap().len()));
         let vert = tmp.0.join("vert.mp4");
         let t = std::time::Instant::now();
-        let job = export::Job { src: &reel, cut: None, quality: Quality::Share, vertical: true, badge: vertical_badge(3, false), mobile: None };
+        let job = export::Job { src: &reel, cut: None, quality: Quality::Share, vertical: true, badge: vertical_badge(3, false), mobile: None, fx: Default::default() };
         export::render(ffmpeg, &job, &opts, &vert, &|_| {}).unwrap();
         println!("vertical en {:.1} s", t.elapsed().as_secs_f64());
         let p = library::probe(ffmpeg, &vert).unwrap();

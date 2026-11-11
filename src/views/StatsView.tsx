@@ -1,14 +1,15 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { fmtDate, fmtPlayed, type Match, type Totals } from "../api";
 import { Icon } from "../components/Icon";
+import { locale, t } from "../i18n";
 import { fmtDistance, fmtNum, fmtPct, hasPlacement } from "../matchStats";
 
 /** Solo las partidas reales de Fortnite (no las grabaciones manuales), de la más vieja a la más nueva. */
 const isGame = (m: Match) => m.status === "ready" && (!!m.replay || !!m.account_id);
 
-const shortDay = (iso: string) => new Date(iso).toLocaleDateString("es", { day: "numeric", month: "short" });
+const shortDay = (iso: string) => new Date(iso).toLocaleDateString(locale(), { day: "numeric", month: "short" });
 const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
-const dec = (n: number, d = 1) => n.toLocaleString("es", { maximumFractionDigits: d });
+const dec = (n: number, d = 1) => n.toLocaleString(locale(),{ maximumFractionDigits: d });
 
 type Metric = {
   key: string;
@@ -35,12 +36,12 @@ export function StatsView({ matches, totals, onOpen }: { matches: Match[]; total
     <div className="page">
       <header className="page-head">
         <div>
-          <h1>Estadísticas</h1>
-          <p>Tu histórico completo y cómo te fue partida a partida, con las partidas que siguen en la biblioteca.</p>
+          <h1>{t("Estadísticas")}</h1>
+          <p>{t("Tu histórico completo y cómo te fue partida a partida, con las partidas que siguen en la biblioteca.")}</p>
         </div>
         {games.length > 0 && (
-          <button className="btn ghost" onClick={() => setTable((t) => !t)} aria-pressed={table}>
-            {table ? "Ver gráficos" : "Ver tabla"}
+          <button className="btn ghost" onClick={() => setTable((on) => !on)} aria-pressed={table}>
+            {table ? t("Ver gráficos") : t("Ver tabla")}
           </button>
         )}
       </header>
@@ -50,8 +51,8 @@ export function StatsView({ matches, totals, onOpen }: { matches: Match[]; total
       {games.length === 0 ? (
         <div className="empty">
           <Icon name="chart" size={36} />
-          <h2>Sin partidas para graficar</h2>
-          <p>Cuando termines una partida, aquí verás tus eliminaciones, cofres, puesto y daño en el tiempo.</p>
+          <h2>{t("Sin partidas para graficar")}</h2>
+          <p>{t("Cuando termines una partida, aquí verás tus eliminaciones, cofres, puesto y daño en el tiempo.")}</p>
         </div>
       ) : table ? (
         <MatchTable games={games} onOpen={onOpen} />
@@ -60,10 +61,14 @@ export function StatsView({ matches, totals, onOpen }: { matches: Match[]; total
           <section className="section" aria-labelledby="sv-por-partida">
             <div className="section-head">
               <h2 id="sv-por-partida" className="section-title">
-                Por partida
+                {t("Por partida")}
               </h2>
               <span className="label">
-                {games.length} {games.length === 1 ? "partida" : "partidas"} · de {shortDay(games[0].created_at)} a {shortDay(games[games.length - 1].created_at)}
+                {t(games.length === 1 ? "{n} partida · de {from} a {to}" : "{n} partidas · de {from} a {to}", {
+                  n: games.length,
+                  from: shortDay(games[0].created_at),
+                  to: shortDay(games[games.length - 1].created_at),
+                })}
               </span>
             </div>
             <div className="sv-grid">
@@ -79,26 +84,34 @@ export function StatsView({ matches, totals, onOpen }: { matches: Match[]; total
   );
 }
 
-function Lifetime({ t }: { t: Totals }) {
+function Lifetime({ t: tot }: { t: Totals }) {
   const tiles: { label: string; value: string; sub?: string; accent?: boolean }[] = [
-    { label: "Partidas", value: fmtNum(t.matches), sub: fmtPlayed(t.seconds) + " jugado" },
-    { label: "Victorias", value: fmtNum(t.victories), sub: t.matches ? `${dec((t.victories / t.matches) * 100)} % de las partidas` : undefined, accent: t.victories > 0 },
-    { label: "Eliminaciones", value: fmtNum(t.kills), sub: t.matches ? `${dec(t.kills / t.matches)} por partida` : undefined },
-    { label: "Derribos", value: fmtNum(t.knocks) },
-    { label: "Cofres", value: fmtNum(t.chests), sub: t.matches ? `${dec(t.chests / t.matches)} por partida` : undefined },
+    { label: t("Partidas"), value: fmtNum(tot.matches), sub: t("{time} jugado", { time: fmtPlayed(tot.seconds) }) },
+    {
+      label: t("Victorias"),
+      value: fmtNum(tot.victories),
+      sub: tot.matches ? t("{pct} % de las partidas", { pct: dec((tot.victories / tot.matches) * 100) }) : undefined,
+      accent: tot.victories > 0,
+    },
+    { label: t("Eliminaciones"), value: fmtNum(tot.kills), sub: tot.matches ? t("{n} por partida", { n: dec(tot.kills / tot.matches) }) : undefined },
+    { label: t("Derribos"), value: fmtNum(tot.knocks) },
+    { label: t("Cofres"), value: fmtNum(tot.chests), sub: tot.matches ? t("{n} por partida", { n: dec(tot.chests / tot.matches) }) : undefined },
   ];
-  if (t.best_placement != null) tiles.push({ label: "Mejor puesto", value: `#${t.best_placement}`, accent: t.best_placement === 1 });
-  if (t.avg_placement != null) tiles.push({ label: "Puesto promedio", value: `#${dec(t.avg_placement)}`, sub: `en ${t.placed_matches ?? 0} partidas con puesto` });
-  if (t.damage_dealt) tiles.push({ label: "Daño hecho", value: fmtNum(t.damage_dealt) });
-  if (t.distance_m) tiles.push({ label: "Distancia", value: fmtDistance(t.distance_m) });
+  if (tot.best_placement != null) tiles.push({ label: t("Mejor puesto"), value: `#${tot.best_placement}`, accent: tot.best_placement === 1 });
+  if (tot.avg_placement != null)
+    tiles.push({ label: t("Puesto promedio"), value: `#${dec(tot.avg_placement)}`, sub: t("en {n} partidas con puesto", { n: tot.placed_matches ?? 0 }) });
+  if (tot.damage_dealt) tiles.push({ label: t("Daño hecho"), value: fmtNum(tot.damage_dealt) });
+  if (tot.distance_m) tiles.push({ label: t("Distancia"), value: fmtDistance(tot.distance_m) });
   return (
     <section className="section" aria-labelledby="sv-historico">
       <div className="section-head">
         <h2 id="sv-historico" className="section-title">
-          Histórico
+          {t("Histórico")}
         </h2>
-        <span className="label" title="Siguen sumando aunque las partidas venzan o se borren">
-          {t.since ? `Desde ${new Date(t.since).toLocaleDateString("es", { day: "numeric", month: "long", year: "numeric" })}` : "Todas tus partidas"}
+        <span className="label" title={t("Siguen sumando aunque las partidas venzan o se borren")}>
+          {tot.since
+            ? t("Desde {date}", { date: new Date(tot.since).toLocaleDateString(locale(), { day: "numeric", month: "long", year: "numeric" }) })
+            : t("Todas tus partidas")}
         </span>
       </div>
       <dl className="sv-tiles">
@@ -150,10 +163,10 @@ function Chart({ games, s, onOpen }: { games: Match[]; s: Metric; onOpen: (id: s
 
   const head = (
     <div className="sv-chart-head">
-      <h3 id={`${id}-t`}>{s.title}</h3>
+      <h3 id={`${id}-t`}>{t(s.title)}</h3>
       <span className="label">
-        {mean == null ? "sin datos" : `prom. ${s.lowerIsBetter ? `#${dec(mean)}` : dec(mean)}`}
-        {s.lowerIsBetter && " · más arriba es mejor"}
+        {mean == null ? t("sin datos") : t("prom. {v}", { v: s.lowerIsBetter ? `#${dec(mean)}` : dec(mean) })}
+        {s.lowerIsBetter && ` · ${t("más arriba es mejor")}`}
       </span>
     </div>
   );
@@ -162,7 +175,7 @@ function Chart({ games, s, onOpen }: { games: Match[]; s: Metric; onOpen: (id: s
     return (
       <figure className="sv-chart">
         {head}
-        <p className="sv-nodata">Aún no hay datos: se leen del replay de Fortnite al terminar cada partida.</p>
+        <p className="sv-nodata">{t("Aún no hay datos: se leen del replay de Fortnite al terminar cada partida.")}</p>
       </figure>
     );
   }
@@ -229,10 +242,17 @@ function Chart({ games, s, onOpen }: { games: Match[]; s: Metric; onOpen: (id: s
   };
 
   const hv = hover != null ? vals[hover] : null;
-  const desc =
-    `${present.length} partidas con dato. Promedio ${mean != null ? s.fmt(mean) : "—"}, ` +
-    `${s.lowerIsBetter ? "mejor" : "máximo"} ${s.fmt(extreme)}, última ${vals[n - 1] != null ? s.fmt(vals[n - 1]!) : "sin dato"}. ` +
-    "Usa las flechas para recorrer las partidas y Enter para abrir una.";
+  const desc = t(
+    s.lowerIsBetter
+      ? "{n} partidas con dato. Promedio {avg}, mejor {best}, última {last}. Usa las flechas para recorrer las partidas y Enter para abrir una."
+      : "{n} partidas con dato. Promedio {avg}, máximo {best}, última {last}. Usa las flechas para recorrer las partidas y Enter para abrir una.",
+    {
+      n: present.length,
+      avg: mean != null ? s.fmt(mean) : "—",
+      best: s.fmt(extreme),
+      last: vals[n - 1] != null ? s.fmt(vals[n - 1]!) : t("sin dato"),
+    },
+  );
 
   return (
     <figure className="sv-chart">
@@ -318,8 +338,8 @@ function Chart({ games, s, onOpen }: { games: Match[]; s: Metric; onOpen: (id: s
         )}
         {hover != null && (
           <div className="sv-tip" style={{ left: Math.min(Math.max(cx(hover), 80), width - 80), top: hv != null ? y(hv) : base }} aria-live="polite">
-            <b>{hv != null ? s.fmt(hv) : "Sin dato"}</b>
-            {s.lowerIsBetter && hv != null && games[hover].total_players ? <span> de {games[hover].total_players}</span> : null}
+            <b>{hv != null ? s.fmt(hv) : t("Sin dato")}</b>
+            {s.lowerIsBetter && hv != null && games[hover].total_players ? <span> {t("de {n}", { n: games[hover].total_players! })}</span> : null}
             <span className="sv-tip-meta">
               {fmtDate(games[hover].created_at)}
               {games[hover].mode && ` · ${games[hover].mode}`}
@@ -349,17 +369,17 @@ function Compare({ games }: { games: Match[] }) {
     <section className="section" aria-labelledby="sv-comparar">
       <div className="section-head">
         <h2 id="sv-comparar" className="section-title">
-          Últimas 10 vs anteriores
+          {t("Últimas 10 vs anteriores")}
         </h2>
-        <span className="label">Promedio por partida · {before.length} anteriores</span>
+        <span className="label">{t("Promedio por partida · {n} anteriores", { n: before.length })}</span>
       </div>
       <table className="sv-table sv-compare">
         <thead>
           <tr>
-            <th scope="col">Dato</th>
-            <th scope="col">Últimas 10</th>
-            <th scope="col">Anteriores</th>
-            <th scope="col">Cambio</th>
+            <th scope="col">{t("Dato")}</th>
+            <th scope="col">{t("Últimas 10")}</th>
+            <th scope="col">{t("Anteriores")}</th>
+            <th scope="col">{t("Cambio")}</th>
           </tr>
         </thead>
         <tbody>
@@ -371,11 +391,11 @@ function Compare({ games }: { games: Match[] }) {
             const better = diff != null && !same && (r.lower ? diff < 0 : diff > 0);
             return (
               <tr key={r.label}>
-                <th scope="row">{r.label}</th>
+                <th scope="row">{t(r.label)}</th>
                 <td>{a != null ? r.fmt(a) : "—"}</td>
                 <td>{b != null ? r.fmt(b) : "—"}</td>
                 <td className={better ? "accent" : "muted"}>
-                  {diff == null ? "—" : same ? "igual" : `${better ? "▲ mejor" : "▼ peor"}`}
+                  {diff == null ? "—" : same ? t("igual") : `${better ? t("▲ mejor") : t("▼ peor")}`}
                 </td>
               </tr>
             );
@@ -393,23 +413,23 @@ function MatchTable({ games, onOpen }: { games: Match[]; onOpen: (id: string) =>
     <section className="section" aria-labelledby="sv-tabla">
       <div className="section-head">
         <h2 id="sv-tabla" className="section-title">
-          Todas las partidas
+          {t("Todas las partidas")}
         </h2>
-        <span className="label">De la más nueva a la más vieja</span>
+        <span className="label">{t("De la más nueva a la más vieja")}</span>
       </div>
       <div className="sv-table-wrap">
         <table className="sv-table">
           <thead>
             <tr>
-              <th scope="col">Partida</th>
-              <th scope="col">Puesto</th>
-              <th scope="col">Elim.</th>
-              <th scope="col">Derribos</th>
-              <th scope="col">Cofres</th>
-              <th scope="col">Daño</th>
-              <th scope="col">Recibido</th>
-              <th scope="col">Precisión</th>
-              <th scope="col">Distancia</th>
+              <th scope="col">{t("Partida")}</th>
+              <th scope="col">{t("Puesto")}</th>
+              <th scope="col">{t("Elim.")}</th>
+              <th scope="col">{t("Derribos")}</th>
+              <th scope="col">{t("Cofres")}</th>
+              <th scope="col">{t("Daño")}</th>
+              <th scope="col">{t("Recibido")}</th>
+              <th scope="col">{t("Precisión")}</th>
+              <th scope="col">{t("Distancia")}</th>
             </tr>
           </thead>
           <tbody>

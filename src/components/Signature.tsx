@@ -1,4 +1,5 @@
 import { fmtClock, type Clip, type MatchEvent } from "../api";
+import { t, tr } from "../i18n";
 
 /** Paso de la regla: el primero que deja como mucho ~12 marcas. */
 export function rulerStep(duration: number) {
@@ -11,13 +12,13 @@ type Flag = { t: number; label: string; plain: boolean };
 function flagsFor(events: MatchEvent[], clips: Clip[], duration: number): Flag[] {
   const raw: Flag[] = [];
   for (const e of events) {
-    if (e.kind === "victory") raw.push({ t: e.t, label: "Victoria", plain: false });
-    else if (e.kind === "bookmark") raw.push({ t: e.t, label: "Marca", plain: true });
+    if (e.kind === "victory") raw.push({ t: e.t, label: t("Victoria"), plain: false });
+    else if (e.kind === "bookmark") raw.push({ t: e.t, label: t("Marca"), plain: true });
     else if (e.kind === "kill" && (e.distance_m ?? 0) >= 100) raw.push({ t: e.t, label: `${Math.round(e.distance_m!)} m`, plain: false });
-    else if (e.kind === "bus") raw.push({ t: e.t, label: "Autobús", plain: true });
+    else if (e.kind === "bus") raw.push({ t: e.t, label: t("Autobús"), plain: true });
   }
   for (const c of clips) {
-    if (/Doble|Triple|Multi/.test(c.title)) raw.push({ t: (c.start + c.end) / 2, label: c.title, plain: false });
+    if (/Doble|Triple|Multi/.test(c.title)) raw.push({ t: (c.start + c.end) / 2, label: tr(c.title), plain: false });
   }
   raw.sort((a, b) => a.t - b.t);
   const out: Flag[] = [];

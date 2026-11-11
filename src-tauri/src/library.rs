@@ -35,7 +35,7 @@ pub struct DriveRef {
     pub size: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Clip {
     pub id: String,
     pub file: String,
@@ -51,6 +51,9 @@ pub struct Clip {
     /// El archivo solo está en Drive (la copia local se borró después de subirlo).
     #[serde(default)]
     pub offloaded: bool,
+    /// La mejor jugada de la partida, elegida al analizarla.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub best: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -72,6 +75,11 @@ pub struct MatchMeta {
     pub mode: Option<String>,
     pub playlist: Option<String>,
     pub map: Option<String>,
+    /// Juego grabado cuando no es Fortnite (sin eventos ni estadísticas).
+    pub game: Option<String>,
+    /// Pistas de audio del video, en orden: `mix` y después cada fuente (game, other, mic).
+    /// Vacío en las grabaciones de una sola pista.
+    pub audio_tracks: Vec<String>,
     pub duration_s: f64,
     pub width: u32,
     pub height: u32,
@@ -352,7 +360,34 @@ pub fn build_events(ctx: &MatchContext, replay: Option<&Replay>, video_start: Da
     }
 
     events.sort_by(|a, b| a.t.total_cmp(&b.t));
+    name_special_kills(&mut events);
     Summary { events, kills, knocks, died, victory: victory_at.is_some() }
+}
+
+/// Una eliminación tuya poco después de que te derribaron (te levantaron y respondiste).
+const COMEBACK_S: f64 = 90.0;
+/// La última eliminación antes de ganar.
+const WINNING_KILL_S: f64 = 25.0;
+
+/// Les pone nombre a las eliminaciones que cuentan algo más: la que hiciste después de que
+/// te derribaran y la que dio la victoria. El replay no dice cuándo te reanimaron ni cuántos
+/// rivales quedaban: se deduce solo de lo que sí trae (derribos, eliminaciones y victoria).
+fn name_special_kills(events: &mut [MatchEvent]) {
+    let victory = events.iter().find(|e| e.kind == "victory").map(|e| e.t);
+    let last_kill = events.iter().rposition(|e| e.kind == "kill");
+    for i in 0..events.len() {
+        if events[i].kind != "kill" || !events[i].label.starts_with("Eliminación") {
+            continue;
+        }
+        let t = events[i].t;
+        let suffix = if events[i].label.ends_with("(bot)") { " (bot)" } else { "" };
+        let knocked = events[..i].iter().rev().take_while(|e| e.kind != "death").any(|e| e.kind == "knocked" && t - e.t <= COMEBACK_S);
+        if Some(i) == last_kill && victory.is_some_and(|v| v >= t && v - t <= WINNING_KILL_S) {
+            events[i].label = format!("Eliminación de la victoria{suffix}");
+        } else if knocked {
+            events[i].label = format!("Remontada · eliminación tras un derribo{suffix}");
+        }
+    }
 }
 
 /// Ventanas de clip automáticas: se agrupan eventos cercanos en un solo clip.
@@ -408,13 +443,36 @@ fn run(cmd: &mut Command) -> Result<std::process::Output> {
     Ok(o)
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Probe {
     pub duration: f64,
     pub width: u32,
     pub height: u32,
     /// 0 si ffmpeg no lo informa.
     pub fps: f64,
+    /// Nombre de cada pista de audio, en orden (`mix`, `game`, `other`, `mic`…).
+    pub audio: Vec<String>,
+}
+
+/// Nombres (handler_name) de las pistas de audio que lista `ffmpeg -i`.
+fn audio_names(info: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut in_audio = false;
+    for line in info.lines() {
+        let l = line.trim();
+        if l.starts_with("Stream #") {
+            in_audio = l.contains("Audio:");
+            if in_audio {
+                names.push(String::new());
+            }
+        } else if in_audio
+            && let Some(v) = l.strip_prefix("handler_name")
+            && let Some(last) = names.last_mut()
+        {
+            *last = v.trim_start_matches([' ', ':']).trim().to_string();
+        }
+    }
+    names
 }
 
 pub fn probe(ffmpeg: &Path, video: &Path) -> Result<Probe> {
@@ -427,7 +485,7 @@ pub fn probe(ffmpeg: &Path, video: &Path) -> Result<Probe> {
     let duration = d[1].parse::<f64>()? * 3600.0 + d[2].parse::<f64>()? * 60.0 + d[3].parse::<f64>()?;
     let (width, height) = RES.captures(&s).map(|c| (c[1].parse().unwrap_or(0), c[2].parse().unwrap_or(0))).unwrap_or((0, 0));
     let fps = FPS.captures(&s).and_then(|c| c[1].parse().ok()).unwrap_or(0.0);
-    Ok(Probe { duration, width, height, fps })
+    Ok(Probe { duration, width, height, fps, audio: audio_names(&s) })
 }
 
 pub fn thumbnail(ffmpeg: &Path, video: &Path, at: f64, out: &Path) -> Result<()> {
@@ -458,6 +516,33 @@ pub fn new_id(prefix: &str) -> String {
 #[cfg(test)]
 mod replay_alignment_tests {
     use super::*;
+
+    #[test]
+    fn names_the_comeback_and_the_winning_kill() {
+        let ev = |t: f64, kind: &str, label: &str| MatchEvent { t, kind: kind.into(), label: label.into(), distance_m: None };
+        let mut events = vec![
+            ev(10.0, "kill", "Eliminación"),
+            ev(100.0, "knocked", "Te derribaron"),
+            ev(150.0, "kill", "Eliminación (bot)"),
+            ev(400.0, "kill", "Tiro largo · 140 m"),
+            ev(600.0, "kill", "Eliminación"),
+            ev(612.0, "victory", "¡Victoria magistral!"),
+        ];
+        name_special_kills(&mut events);
+        let labels: Vec<&str> = events.iter().filter(|e| e.kind == "kill").map(|e| e.label.as_str()).collect();
+        assert_eq!(labels, ["Eliminación", "Remontada · eliminación tras un derribo (bot)", "Tiro largo · 140 m", "Eliminación de la victoria"]);
+        // Un derribo viejo, o uno del que no volviste, no cuenta.
+        let mut old = vec![ev(0.0, "knocked", "Te derribaron"), ev(200.0, "kill", "Eliminación")];
+        name_special_kills(&mut old);
+        assert_eq!(old[1].label, "Eliminación");
+    }
+
+    #[test]
+    fn reads_audio_track_names() {
+        let info = "  Stream #0:0[0x1](und): Video: h264 (High), 2560x1440, 60 fps (default)\n      Metadata:\n        handler_name    : VideoHandler\n  Stream #0:1[0x2](und): Audio: aac (LC), 48000 Hz, stereo (default)\n      Metadata:\n        handler_name    : mix\n  Stream #0:2[0x3](und): Audio: aac (LC), 48000 Hz\n      Metadata:\n        handler_name    : game\n  Stream #0:3[0x4](und): Audio: aac\n";
+        assert_eq!(audio_names(info), ["mix", "game", ""]);
+        assert!(audio_names("Stream #0:0: Video: h264").is_empty());
+    }
 
     /// Usa la última partida real de la biblioteca: `cargo test -- --ignored --nocapture`
     #[test]

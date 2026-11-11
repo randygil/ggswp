@@ -146,12 +146,29 @@ async fn upload_file(app: &AppHandle, shared: &Shared, path: &std::path::Path, n
 /// se sube el original.
 async fn compress_for_drive(app: &AppHandle, shared: &Shared, src: &std::path::Path, duration: f64, k: &str) -> Option<std::path::PathBuf> {
     let settings = shared.settings.read().unwrap().clone();
-    let video = match settings.drive.codec.as_str() {
-        "hevc" => vec!["-c:v", "hevc_nvenc", "-cq", "28", "-tag:v", "hvc1"],
-        "av1" => vec!["-c:v", "av1_nvenc", "-cq", "34"],
-        "h264" => vec!["-c:v", "h264_nvenc", "-cq", "26"],
+    use crate::capture::video::{Family, available_encoders, encoder_for, family, pick_encoder};
+    let (codec, q) = match settings.drive.codec.as_str() {
+        "hevc" => ("hevc", "28"),
+        "av1" => ("av1", "34"),
+        "h264" => ("h264", "26"),
         _ => return None,
     };
+    // Con la tarjeta que graba; si no tiene ese códec, se sube el original.
+    let fam = family(&pick_encoder(&settings.encoder, available_encoders()));
+    let encoder = encoder_for(fam, codec);
+    if fam == Family::Software || available_encoders().is_some_and(|av| !av.contains(&encoder)) {
+        return None;
+    }
+    let mut video: Vec<&str> = vec!["-c:v", &encoder];
+    video.extend(match fam {
+        Family::Nvenc => vec!["-cq", q, "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-b:v", "0", "-maxrate", "25M", "-bufsize", "50M"],
+        Family::Amf => vec!["-usage", "transcoding", "-quality", "quality", "-rc", "cqp", "-qp_i", q, "-qp_p", q, "-qp_b", q],
+        _ => vec!["-preset", "medium", "-global_quality", q, "-maxrate", "25M", "-bufsize", "50M"],
+    });
+    if codec == "hevc" {
+        video.extend(["-tag:v", "hvc1"]);
+    }
+    let video: Vec<String> = video.into_iter().map(String::from).collect();
     let ffmpeg = crate::engine::ffmpeg_path(app, &settings);
     let dst = src.with_extension("drive.mp4");
     let original = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
@@ -165,7 +182,7 @@ async fn compress_for_drive(app: &AppHandle, shared: &Shared, src: &std::path::P
             .arg(&src2)
             .args(["-map", "0"])
             .args(&video)
-            .args(["-preset", "p5", "-tune", "hq", "-rc", "vbr", "-b:v", "0", "-maxrate", "25M", "-bufsize", "50M", "-c:a", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats"])
+            .args(["-c:a", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats"])
             .arg(&dst2)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -404,6 +421,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             drive: drive.then(|| DriveRef { file_id: id.into(), link: String::new(), size: None }),
             offloaded: false,
+            best: false,
         }
     }
 

@@ -6,7 +6,8 @@ Grabador automático de partidas de Fortnite para Windows. Detecta cuándo empie
 cada partida, graba la pantalla (lo que ves tú) con el audio, marca tus eliminaciones en la
 línea de tiempo, genera clips y te deja editarlos, enviarlos al teléfono o subirlos a Google Drive.
 
-Una sola app de escritorio (Tauri + React), sin OBS: la captura va integrada.
+Una sola app de escritorio (Tauri + React), sin OBS: la captura va integrada. La interfaz
+está en español e inglés.
 
 **Descarga:** el instalador está en [Releases](https://github.com/randygil/ggswp/releases).
 Una vez instalada, la app avisa sola cuando hay una versión nueva.
@@ -28,7 +29,16 @@ Una vez instalada, la app avisa sola cuando hay una versión nueva.
 - **Clips livianos**: se guardan en H.264 a 1080p (cerca de 1 MB por segundo) en vez de a la
   calidad de grabación, listos para WhatsApp e Instagram. El editor exporta en horizontal,
   vertical 9:16 o **modo móvil** (9:16 con la salud y las armas en una franja que se mueve a la altura que quieras; las zonas
-  se ajustan arrastrando sobre el video, con vista previa en vivo) y en tres calidades.
+  se ajustan arrastrando sobre el video, con vista previa en vivo; se pueden sumar piezas
+  sueltas como el minimapa y guardar la disposición como plantilla) y en tres calidades.
+- **Audio por pistas**: el juego se graba aparte del resto (Discord, música, navegador) y del
+  micrófono. La partida completa guarda todo; cada clip lleva solo lo que elijas.
+- **Efectos en el editor**: texto sobre el clip, cámara lenta y zoom al punto de mira en un
+  tramo, música de fondo y volumen. También une varios clips en uno, en el orden que elijas.
+- **Mejor jugada**: al terminar cada partida elige su mejor clip y deja una versión 9:16 lista
+  para subir. **Resumen semanal**: un video con lo mejor de los últimos 7 días.
+- **Otros juegos**: graba la sesión entera de los juegos que agregues en Ajustes (sin
+  detección de eventos; los atajos funcionan igual).
 - **Compartir**: copiar el video al portapapeles, panel "Compartir" de Windows, guardar como,
   al teléfono por Wi-Fi o Drive con un QR. Menú de highlights sobre el juego y menús de clic derecho.
 
@@ -37,14 +47,16 @@ Una vez instalada, la app avisa sola cuando hay una versión nueva.
 | Pieza | Técnica |
 |---|---|
 | Detección de partida | Lee `%LOCALAPPDATA%\FortniteGame\Saved\Logs\FortniteGame.log` en vivo: `LoadMap` a un servidor → carga, `MatchState … InProgress` → empieza, `EAthenaGamePhase::Aircraft` → autobús, `Match finished for … end game` → te eliminaron o ganaste, `LoadMap … Frontend` → lobby. |
-| Video | Desktop Duplication (`ddagrab`) del monitor donde está Fortnite → NVENC (H.264/HEVC/AV1). Los frames no salen de la GPU. |
-| Audio | WASAPI loopback (lo que suena en tu salida) y micrófono opcional. Cada paquete se ubica por su timestamp QPC, el mismo reloj del video, así la sincronía es exacta. |
+| Video | Desktop Duplication (`ddagrab`) del monitor donde está el juego → codificador de la tarjeta gráfica: NVENC (NVIDIA), AMF (AMD) o Quick Sync (Intel), en H.264/HEVC/AV1; sin ninguna, `libx264` por software. Al iniciar se prueba cuáles funcionan. Con NVENC y AMF los frames no salen de la GPU. |
+| Audio | WASAPI: loopback del proceso del juego, loopback de todo lo demás y micrófono opcional, cada uno en su pista (más una con la mezcla, que es la que reproduce cualquier reproductor). Si Windows no permite separar por proceso, loopback del dispositivo de salida. Cada paquete se ubica por su timestamp QPC, el mismo reloj del video, así la sincronía es exacta. |
 | Eliminaciones | Al terminar, lee el `.replay` de `Saved\Demos` (eventos `playerElim`, cifrados AES-256 con la clave de la cabecera): quién eliminó a quién, derribos, distancia y momento exacto. Si no hay replay, usa los avisos de highlight que Fortnite le manda a NVIDIA (`HLSetVideo`). |
 | Anti-cheat | No se inyecta nada en el juego ni se lee su memoria: solo archivos que Fortnite escribe en disco (lo mismo que hace Medal). |
 
 ## Requisitos
 
-- Windows 10/11 con GPU NVIDIA (NVENC).
+- Windows 10/11 con tarjeta NVIDIA, AMD o Intel (sin codificador por hardware graba por
+  software, que usa mucho procesador). Separar el audio del juego requiere Windows 10 2004 o
+  superior.
 - En Fortnite: **Ajustes → Juego → Repeticiones activadas** (para detectar eliminaciones) y
   **Modo de ventana: Ventana sin bordes** si quieres ver los avisos y el menú sobre el juego.
 - Para desarrollar: Node 20+, Rust estable y ffmpeg con `ddagrab` (6.0 o superior).
@@ -69,7 +81,9 @@ Por defecto no se usan `Alt+F9`/`Alt+F10`/`Alt+Z` porque son los de NVIDIA.
 ### Editor
 
 En la vista de partida: `I` / `O` marcan inicio y fin, se arrastran los bordes en la línea de
-tiempo y **Exportar clip** corta exacto al frame (recodifica con NVENC). `←`/`→` 5 s,
+tiempo y **Exportar clip** corta exacto al frame (recodifica con la tarjeta gráfica). Un clic en
+un evento o en un clip de la línea de tiempo salta a ese momento y lo deja marcado. **Efectos**
+abre el texto, la cámara lenta con zoom, la música y las fuentes de audio del clip. `←`/`→` 5 s,
 `Shift+←/→` 1 s, `,`/`.` frame a frame, `Espacio` pausa, `F` pantalla completa.
 
 ### Compartir
@@ -138,10 +152,10 @@ src-tauri/src/
   hotkeys.rs          atajos globales
   share.rs            servidor Wi-Fi + QR, red local y firewall
   winshare.rs         portapapeles y panel "Compartir" de Windows
-  export.rs           formatos de salida de los clips (liviano, mínimo, original)
+  export.rs           formatos de salida, modo móvil y efectos del editor (texto, cámara lenta, música)
   gdrive.rs uploads.rs  Google Drive
   fortnite/chests.rs  cofres abiertos (OCR de los avisos de PE)
-  montage.rs          resumen de la partida y versión vertical
+  montage.rs          resumen de la partida, resumen semanal, unión de clips y versión vertical
   retention.rs        vencimiento (PC y Drive)
   stats.rs            histórico de estadísticas
 src/                  interfaz React (galería, clips, editor, estadísticas, ajustes, overlay)
@@ -165,8 +179,11 @@ El instalador incluye `ffmpeg.exe` (FFmpeg, GPLv3), que ggswp ejecuta como progr
 
 - Con Fortnite en *Pantalla completa* exclusiva no se ven los avisos ni el menú (la grabación
   funciona igual).
-- El audio del sistema incluye todo lo que suena (Discord, música…). La captura solo del
-  proceso de Fortnite queda pendiente.
-- Solo codificadores NVIDIA por ahora (AMD AMF / Intel QSV serían fáciles de agregar).
+- Los codificadores de AMD (AMF) e Intel (Quick Sync) están implementados pero solo se probaron
+  NVENC y el de software: si fallan en tu tarjeta, elige "Por software" en Ajustes.
+- El replay de Fortnite no dice cuándo reanimas a alguien ni cuántos rivales quedaban: la app
+  reconoce tiros largos, rachas, la eliminación de la victoria y las que haces después de que
+  te derribaron, pero no reanimaciones ni situaciones de 1 contra varios.
+- En otros juegos no hay eventos ni clips automáticos: solo la grabación y los atajos.
 - Los videos HEVC/AV1 se reproducen dentro de la app solo si Windows tiene los códecs; H.264
   funciona siempre.

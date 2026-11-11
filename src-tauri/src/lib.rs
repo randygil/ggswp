@@ -75,6 +75,7 @@ fn get_settings(state: State<AppState>) -> Settings {
 #[tauri::command]
 fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> CmdResult<Vec<String>> {
     let prev_port = state.shared.settings.read().unwrap().share_port;
+    let language_changed = state.shared.settings.read().unwrap().language != settings.language;
     settings.save(&state.shared.settings_path).map_err(err)?;
     let autostart = app.autolaunch();
     let _ = if settings.launch_at_startup { autostart.enable() } else { autostart.disable() };
@@ -84,6 +85,11 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     let failed = hotkeys::apply(&app, &settings.hotkeys);
     *state.shared.settings.write().unwrap() = settings;
     let _ = app.emit("library", ());
+    if language_changed {
+        // Las ventanas se recargan con el idioma nuevo.
+        tray::relabel(&app);
+        let _ = app.emit("language", ());
+    }
     Ok(failed)
 }
 
@@ -163,6 +169,7 @@ async fn export_clip(
     title: String,
     quality: Option<Quality>,
     frame: String,
+    fx: Option<export::Fx>,
 ) -> CmdResult<Clip> {
     if end - start < 0.5 {
         return Err("El clip es demasiado corto".into());
@@ -184,8 +191,14 @@ async fn export_clip(
         let file = from.as_ref().map(|c| c.file.clone()).or_else(|| m.video.clone()).unwrap_or_else(|| "match.mp4".into());
         // Un clip que ya es vertical se recorta tal cual.
         let from_vertical = from.as_ref().is_some_and(|c| c.kind == "vertical");
-        let mobile = (frame == "mobile" && !from_vertical).then_some(settings.mobile_layout);
-        let vertical = (frame == "vertical" || mobile.is_some()) && !from_vertical;
+        let mobile = (frame == "mobile" && !from_vertical).then(|| settings.mobile_layout.clone());
+        let is_mobile = mobile.is_some();
+        let vertical = (frame == "vertical" || is_mobile) && !from_vertical;
+        // Sin elección en el editor, las fuentes de audio son las de Ajustes.
+        let mut fx = fx.unwrap_or_default();
+        if fx.tracks.is_none() {
+            fx.tracks = Some(export::default_tracks(&settings));
+        }
         let cid = library::new_id("edit");
         std::fs::create_dir_all(lib.file(&id, "clips"))?;
         let out_file = format!("clips/{cid}.mp4");
@@ -197,6 +210,7 @@ async fn export_clip(
             vertical,
             badge: montage::vertical_badge(m.kills, m.victory),
             mobile,
+            fx,
         };
         shared.set_step(&app2, &id, "Exportando clip", Some(0.0));
         let result = export::render(&ffmpeg, &job, &engine::video_options(&settings, 0), &out, &|p| shared.set_step(&app2, &id, "Exportando clip", Some(p)));
@@ -208,31 +222,34 @@ async fn export_clip(
         let thumb = format!("clips/{cid}.jpg");
         let thumb_ok = library::thumbnail(&ffmpeg, &out, ((end - start) / 2.0).min(3.0), &lib.file(&id, &thumb)).is_ok();
         let title = match (title.trim(), &from) {
-            ("", Some(c)) if vertical => format!("{} · {}", c.title, if mobile.is_some() { "móvil" } else { "vertical" }),
+            ("", Some(c)) if vertical => format!("{} · {}", c.title, if is_mobile { "móvil" } else { "vertical" }),
             ("", Some(c)) => c.title.clone(),
             ("", None) => "Clip".to_string(),
             (t, _) => t.to_string(),
         };
         // Los tiempos de un clip son los de la partida. Un recorte de un resumen o de un
         // vertical no corresponde a un tramo de la partida: no va en la línea de tiempo.
-        let on_timeline = from.as_ref().is_none_or(|c| !matches!(c.kind.as_str(), "reel" | "vertical" | "cut"));
+        let on_timeline = from.as_ref().is_none_or(|c| !matches!(c.kind.as_str(), "reel" | "vertical" | "cut" | "join"));
         let offset = from.as_ref().filter(|_| on_timeline).map_or(0.0, |c| c.start);
         let (kind, clip_start) = match (vertical || from_vertical, on_timeline) {
             (true, _) => ("vertical", offset + start),
             (false, true) => ("manual", offset + start),
             (false, false) => ("cut", 0.0),
         };
+        // Con cámara lenta el clip dura más que el tramo de donde salió.
+        let length = library::probe(&ffmpeg, &out).map(|p| p.duration).unwrap_or(end - start);
         let clip = Clip {
             id: cid,
             file: out_file,
             thumb: thumb_ok.then_some(thumb),
             start: clip_start,
-            end: clip_start + (end - start),
+            end: clip_start + if on_timeline && !vertical { end - start } else { length },
             title,
             kind: kind.into(),
             created_at: chrono::Utc::now(),
             drive: None,
             offloaded: false,
+            best: false,
         };
         // Se vuelve a leer: la partida pudo cambiar mientras se codificaba.
         let mut m = lib.load(&id)?;
@@ -245,6 +262,41 @@ async fn export_clip(
     .map_err(|e| format!("{e:#}"))?;
     let _ = app.emit("library", ());
     Ok(clip)
+}
+
+/// Une varios clips de una partida en uno, en el orden dado.
+#[tauri::command]
+async fn join_clips(app: AppHandle, state: State<'_, AppState>, id: String, clip_ids: Vec<String>, title: String) -> CmdResult<Clip> {
+    let shared = state.shared.clone();
+    let app2 = app.clone();
+    let clip = tauri::async_runtime::spawn_blocking(move || montage::join_clips(&app2, &shared, &id, &clip_ids, &title)).await.map_err(err)?.map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("library", ());
+    Ok(clip)
+}
+
+/// Un video con lo mejor de los últimos 7 días; devuelve el id de la entrada nueva.
+#[tauri::command]
+async fn create_weekly(app: AppHandle, state: State<'_, AppState>) -> CmdResult<String> {
+    let shared = state.shared.clone();
+    let app2 = app.clone();
+    let meta = tauri::async_runtime::spawn_blocking(move || montage::create_weekly(&app2, &shared)).await.map_err(err)?.map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("library", ());
+    Ok(meta.id)
+}
+
+/// Guarda las disposiciones del modo móvil que tienen nombre.
+#[tauri::command]
+fn set_mobile_presets(state: State<AppState>, presets: Vec<export::MobilePreset>) -> CmdResult<()> {
+    let mut s = state.shared.settings.write().unwrap();
+    s.mobile_presets = presets;
+    s.save(&state.shared.settings_path).map_err(err)
+}
+
+/// Programas abiertos, para agregar uno como juego a grabar.
+#[tauri::command]
+fn list_open_apps() -> Vec<capture::win::OpenApp> {
+    let me = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+    capture::win::open_apps().into_iter().filter(|a| Some(&a.exe) != me.as_ref() && !a.exe.eq_ignore_ascii_case(capture::win::FORTNITE_EXE)).collect()
 }
 
 /// Guarda las zonas del HUD y el encuadre del modo móvil que se ajustan en el editor.
@@ -534,7 +586,12 @@ fn reveal(state: State<AppState>, id: String, clip_id: Option<String>) -> CmdRes
 struct SetupCheck {
     ffmpeg: Option<String>,
     ffmpeg_path: String,
+    /// El codificador elegido funciona en esta PC.
     nvenc: bool,
+    /// Codificadores que funcionan en esta PC.
+    encoders: Vec<String>,
+    /// El que se usa de verdad (otro, si el elegido no funciona aquí).
+    encoder_in_use: String,
     fortnite_log: bool,
     replays_enabled: Option<bool>,
 }
@@ -546,7 +603,9 @@ async fn check_setup(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Se
     tauri::async_runtime::spawn_blocking(move || {
         let run = |args: &[&str]| std::process::Command::new(&ffmpeg).args(args).creation_flags(CREATE_NO_WINDOW).output().ok();
         let version = run(&["-hide_banner", "-version"]).filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string());
-        let nvenc = run(&["-hide_banner", "-encoders"]).map(|o| String::from_utf8_lossy(&o.stdout).contains(&settings.encoder)).unwrap_or(false);
+        let encoders = capture::video::detect_encoders(&ffmpeg).to_vec();
+        let nvenc = encoders.contains(&settings.encoder);
+        let encoder_in_use = capture::video::pick_encoder(&settings.encoder, Some(&encoders));
         let ini = std::env::var_os("LOCALAPPDATA").map(|p| std::path::PathBuf::from(p).join("FortniteGame\\Saved\\Config\\WindowsClient\\GameUserSettings.ini"));
         let replays_enabled = ini.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| {
             s.lines().find_map(|l| l.trim().strip_prefix("bReplayRecordingEnabled=").map(|v| v.eq_ignore_ascii_case("true")))
@@ -555,6 +614,8 @@ async fn check_setup(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Se
             ffmpeg: version,
             ffmpeg_path: ffmpeg.display().to_string(),
             nvenc,
+            encoders,
+            encoder_in_use,
             fortnite_log: fortnite::log::log_path().is_some_and(|p| p.exists()),
             replays_enabled,
         }
@@ -638,6 +699,10 @@ pub fn run() {
             share_firewall_allow,
             compress_clips,
             set_mobile_layout,
+            set_mobile_presets,
+            join_clips,
+            create_weekly,
+            list_open_apps,
             drive_connect,
             drive_disconnect,
             drive_upload,

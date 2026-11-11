@@ -18,6 +18,8 @@ use crate::fortnite::replay;
 use crate::library::{self, Clip, Library, MatchContext, MatchMeta, MatchStatus};
 
 const MAX_RECORDING: Duration = Duration::from_secs(90 * 60);
+/// Id del clip vertical con la mejor jugada de la partida.
+const BEST_ID: &str = "best";
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct RecordingInfo {
@@ -49,6 +51,8 @@ pub struct Status {
     /// Paso en curso de cada partida en `processing`.
     pub steps: std::collections::BTreeMap<String, Step>,
     pub fortnite_running: bool,
+    /// Otro juego de la lista de Ajustes que está abierto.
+    pub game: Option<String>,
     /// idle | lobby | loading | in_match
     pub game_state: String,
     pub recording: Option<RecordingInfo>,
@@ -123,7 +127,8 @@ pub fn ffmpeg_path(app: &AppHandle, s: &Settings) -> PathBuf {
 }
 
 pub fn video_options(s: &Settings, output_index: u32) -> VideoOptions {
-    VideoOptions { output_index, fps: s.fps, encoder: s.encoder.clone(), cq: s.quality_cq, max_bitrate_mbps: s.max_bitrate_mbps }
+    let encoder = capture::video::pick_encoder(&s.encoder, capture::video::available_encoders());
+    VideoOptions { output_index, fps: s.fps, encoder, cq: s.quality_cq, max_bitrate_mbps: s.max_bitrate_mbps }
 }
 
 pub fn spawn(app: AppHandle, settings: Settings, settings_path: PathBuf) -> Arc<Shared> {
@@ -147,6 +152,8 @@ struct Active {
     session: Session,
     match_id: String,
     manual: bool,
+    /// Sesión de otro juego: se graba mientras su ventana siga abierta.
+    game: Option<String>,
     started: Instant,
     stop_at: Option<Instant>,
 }
@@ -164,6 +171,8 @@ struct Engine {
     game_missing_since: Option<Instant>,
     buffer: Vec<BufferSession>,
     buffer_seq: u32,
+    /// Otro juego abierto (nombre y ejecutable), según la última revisión.
+    other_game: Option<crate::config::GameProfile>,
 }
 
 impl Engine {
@@ -181,6 +190,7 @@ impl Engine {
             game_missing_since: None,
             buffer: Vec::new(),
             buffer_seq: 0,
+            other_game: None,
         }
     }
 
@@ -205,6 +215,8 @@ impl Engine {
                 self.apply(e, true);
             }
         }
+        // Antes de grabar nada hay que saber qué codificadores tiene esta PC.
+        capture::video::detect_encoders(&ffmpeg_path(&self.app, &self.settings()));
         let running = win::fortnite_running();
         self.set_status(|s| s.fortnite_running = running);
         if running && self.in_match && self.match_started && self.settings().auto_record {
@@ -330,6 +342,21 @@ impl Engine {
                 }
                 self.publish_game_state();
             }
+            let settings = self.settings();
+            let other = if running { None } else { settings.games.iter().find(|g| win::find_window(&g.exe).is_some()).cloned() };
+            if other != self.other_game {
+                self.other_game = other.clone();
+                win::set_other_game(other.as_ref().map(|g| g.exe.clone()));
+                let name = other.as_ref().map(|g| g.name.clone());
+                self.set_status(|s| s.game = name);
+            }
+            // Otro juego: se graba la sesión entera, desde que abre hasta que cierra.
+            let recorded = self.active.as_ref().and_then(|a| a.game.clone());
+            match (&other, recorded) {
+                (Some(g), None) if self.active.is_none() && settings.auto_record => self.start_recording(false),
+                (other, Some(name)) if other.as_ref().is_none_or(|g| g.name != name) => self.stop_recording("el juego se cerró"),
+                _ => {}
+            }
             self.game_missing_since = if running { None } else { self.game_missing_since.or(Some(Instant::now())) };
         }
         self.tick_buffer();
@@ -340,7 +367,7 @@ impl Engine {
             Some("jugador terminó")
         } else if a.started.elapsed() > MAX_RECORDING {
             Some("duración máxima")
-        } else if !a.manual && self.game_missing_since.is_some_and(|t| t.elapsed() > Duration::from_secs(5)) {
+        } else if !a.manual && a.game.is_none() && self.game_missing_since.is_some_and(|t| t.elapsed() > Duration::from_secs(5)) {
             Some("fortnite se cerró")
         } else {
             None
@@ -350,16 +377,26 @@ impl Engine {
         }
     }
 
-    fn start_recording(&mut self, manual: bool) {
-        let settings = self.settings();
-        let output = settings.monitor.or_else(win::fortnite_output_index).unwrap_or(0);
-        let cfg = SessionConfig {
-            ffmpeg: ffmpeg_path(&self.app, &settings),
-            video: video_options(&settings, output),
+    /// Monitor y fuentes de audio de una grabación nueva.
+    fn session_config(&self, settings: &Settings) -> SessionConfig {
+        let window = win::game_window();
+        let output = settings.monitor.or_else(|| window.and_then(win::output_index_of)).unwrap_or(0);
+        SessionConfig {
+            ffmpeg: ffmpeg_path(&self.app, settings),
+            video: video_options(settings, output),
             system_audio: settings.system_audio,
             microphone: settings.microphone,
             mic_volume: settings.mic_volume,
-        };
+            game_pid: window.and_then(win::window_pid).filter(|_| settings.separate_audio),
+        }
+    }
+
+    fn start_recording(&mut self, manual: bool) {
+        let settings = self.settings();
+        let cfg = self.session_config(&settings);
+        let output = cfg.video.output_index;
+        // Sin Fortnite abierto, una grabación automática es la sesión de otro juego.
+        let game = if manual || win::fortnite_running() { None } else { self.other_game.as_ref().map(|g| g.name.clone()) };
         self.clear_buffer();
         let match_id = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
         let lib = Library::new(settings.library_dir.clone());
@@ -370,15 +407,20 @@ impl Engine {
                 let meta = MatchMeta {
                     id: match_id.clone(),
                     created_at: session.started_at(),
-                    title: if manual { "Grabación manual".into() } else { "Partida en curso".into() },
+                    title: match &game {
+                        Some(g) => format!("{g} · sesión"),
+                        None if manual => "Grabación manual".into(),
+                        None => "Partida en curso".into(),
+                    },
+                    game: game.clone(),
                     map: self.ctx.map.clone(),
                     status: MatchStatus::Recording,
                     ..Default::default()
                 };
                 let _ = lib.save(&meta);
                 let info = RecordingInfo { match_id: match_id.clone(), started_at: session.started_at(), manual };
-                self.active = Some(Active { session, match_id, manual, started: Instant::now(), stop_at: None });
-                if manual {
+                self.active = Some(Active { session, match_id, manual, game: game.clone(), started: Instant::now(), stop_at: None });
+                if manual || game.is_some() {
                     self.ctx = MatchContext::default();
                 }
                 self.set_status(|s| {
@@ -388,7 +430,12 @@ impl Engine {
                 });
                 let _ = self.app.emit("library", ());
                 crate::tray::refresh(&self.app, true);
-                crate::overlay::toast(&self.app, if manual { "Grabación iniciada" } else { "Grabando partida" }, "rec");
+                let toast = match &game {
+                    Some(g) => format!("Grabando {g}"),
+                    None if manual => "Grabación iniciada".into(),
+                    None => "Grabando partida".into(),
+                };
+                crate::overlay::toast(&self.app, &toast, "rec");
             }
             Err(e) => {
                 log::error!("No se pudo iniciar la grabación: {e:#}");
@@ -417,7 +464,7 @@ impl Engine {
         let shared = self.shared.clone();
         std::thread::spawn(move || {
             let lib = shared.library();
-            let result = raw.and_then(|raw| process(&app, &shared, &lib, &id, raw, ctx, a.manual));
+            let result = raw.and_then(|raw| process(&app, &shared, &lib, &id, raw, ctx, a.manual || a.game.is_some()));
             if let Err(e) = &result {
                 log::error!("Procesando {id}: {e:#}");
                 if let Ok(mut m) = lib.load(&id) {
@@ -500,17 +547,10 @@ impl Engine {
 
     fn start_buffer_session(&mut self) {
         let settings = self.settings();
-        let output = settings.monitor.or_else(win::fortnite_output_index).unwrap_or(0);
         self.buffer_seq += 1;
         let dir = self.buffer_root().join(format!("b{}", self.buffer_seq));
         let _ = std::fs::remove_dir_all(&dir);
-        let cfg = SessionConfig {
-            ffmpeg: ffmpeg_path(&self.app, &settings),
-            video: video_options(&settings, output),
-            system_audio: settings.system_audio,
-            microphone: settings.microphone,
-            mic_volume: settings.mic_volume,
-        };
+        let cfg = self.session_config(&settings);
         match Session::start(dir, cfg) {
             Ok(session) => self.buffer.push(BufferSession { session, started: Instant::now() }),
             Err(e) => {
@@ -614,6 +654,7 @@ fn save_buffer_clip(app: &AppHandle, shared: &Shared, raw: RawRecording, secs: f
             created_at: created,
             drive: None,
             offloaded: false,
+            best: false,
         }],
         status: MatchStatus::Ready,
         ..Default::default()
@@ -636,6 +677,8 @@ fn process(app: &AppHandle, shared: &Shared, lib: &Library, id: &str, raw: RawRe
     capture::finalize(&ffmpeg, &raw, &video)?;
     capture::remove_raw(&raw);
     let probe = library::probe(&ffmpeg, &video)?;
+    let tracks = capture::track_names(&raw);
+    meta.audio_tracks = if tracks.len() > 1 { tracks.iter().map(|t| t.to_string()).collect() } else { Vec::new() };
     meta.video = Some("match.mp4".into());
     meta.duration_s = probe.duration;
     meta.width = probe.width;
@@ -685,7 +728,7 @@ pub fn analyze(
     meta.events = sum.events;
     meta.events.extend(kept);
     meta.chests = 0;
-    if settings.detect_chests && !meta.offloaded && video.exists() {
+    if settings.detect_chests && !meta.offloaded && meta.game.is_none() && video.exists() {
         let started = Instant::now();
         step("Contando cofres", Some(0.0));
         let total = meta.duration_s.max(1.0);
@@ -723,7 +766,7 @@ pub fn analyze(
     };
     meta.clips = previous
         .iter()
-        .filter(|c| matches!(c.kind.as_str(), "manual" | "cut" | "reel" | "vertical") || (c.kind == "hotkey" && ctx.clip_requests.is_empty()))
+        .filter(|c| c.id != BEST_ID && (matches!(c.kind.as_str(), "manual" | "cut" | "join" | "reel" | "vertical") || (c.kind == "hotkey" && ctx.clip_requests.is_empty())))
         .cloned()
         .collect();
     let clips_dir = lib.file(&meta.id, "clips");
@@ -732,9 +775,14 @@ pub fn analyze(
     // codificar ahora, el clip sale igual, a calidad original.
     let quality = crate::export::Quality::from_setting(&settings.clip_quality);
     let rec = video_options(settings, 0);
+    // Con pistas separadas, los clips llevan solo las fuentes elegidas en Ajustes; por eso
+    // se recodifican aunque el formato sea el original.
+    let tracks = crate::export::default_tracks(settings);
+    let picks_audio = !meta.audio_tracks.is_empty() && !(settings.clip_other_audio && settings.clip_mic_audio);
     let cut = |start: f64, end: f64, out: &std::path::Path| -> anyhow::Result<()> {
-        if quality != crate::export::Quality::Original {
-            let job = crate::export::Job { src: &video, cut: Some((start, end - start)), quality, vertical: false, badge: None, mobile: None };
+        if quality != crate::export::Quality::Original || picks_audio {
+            let fx = crate::export::Fx { tracks: Some(tracks.clone()), ..Default::default() };
+            let job = crate::export::Job { src: &video, cut: Some((start, end - start)), quality, vertical: false, badge: None, mobile: None, fx };
             match crate::export::render(ffmpeg, &job, &rec, out, &|_| {}) {
                 Ok(()) => return Ok(()),
                 Err(e) => log::warn!("{id}: clip en formato liviano: {e:#}; se guarda a calidad original"),
@@ -761,7 +809,7 @@ pub fn analyze(
         }
         let thumb = format!("clips/{cid}.jpg");
         let thumb_ok = library::thumbnail(ffmpeg, &lib.file(&meta.id, &file), ((end - start) - 2.0).max(0.0), &lib.file(&meta.id, &thumb)).is_ok();
-        meta.clips.push(Clip { id: cid, file, thumb: thumb_ok.then_some(thumb), start, end, title: "Clip guardado".into(), kind: "hotkey".into(), created_at: Utc::now(), drive: None, offloaded: false });
+        meta.clips.push(Clip { id: cid, file, thumb: thumb_ok.then_some(thumb), start, end, title: "Clip guardado".into(), kind: "hotkey".into(), created_at: Utc::now(), drive: None, offloaded: false, best: false });
     }
     if settings.auto_clips {
         std::fs::create_dir_all(&clips_dir)?;
@@ -782,7 +830,44 @@ pub fn analyze(
             }
             let thumb = format!("clips/{cid}.jpg");
             let thumb_ok = library::thumbnail(ffmpeg, &out, ((end - start) - settings.clip_after_s).max(0.0), &lib.file(&meta.id, &thumb)).is_ok();
-            meta.clips.push(Clip { id: cid, file, thumb: thumb_ok.then_some(thumb), start, end, title, kind, created_at: Utc::now(), drive: None, offloaded: false });
+            meta.clips.push(Clip { id: cid, file, thumb: thumb_ok.then_some(thumb), start, end, title, kind, created_at: Utc::now(), drive: None, offloaded: false, best: false });
+        }
+    }
+    // La mejor jugada: el clip automático de más peso, y su versión vertical lista para subir.
+    let best = meta
+        .clips
+        .iter()
+        .filter(|c| c.id.starts_with("auto"))
+        .map(|c| (crate::montage::window_score(&meta.events, c.start, c.end), c.id.clone(), c.start, c.end, c.title.clone()))
+        .filter(|b| b.0 >= 3.0)
+        .max_by(|a, b| a.0.total_cmp(&b.0));
+    for c in &mut meta.clips {
+        c.best = best.as_ref().is_some_and(|b| b.1 == c.id);
+    }
+    if let Some((_, _, start, end, title)) = best.filter(|_| settings.best_play != "off" && meta.width > meta.height) {
+        if let Some(c) = reuse(BEST_ID, start, end) {
+            meta.clips.push(c);
+        } else {
+            step("Preparando la mejor jugada", None);
+            let file = format!("clips/{BEST_ID}.mp4");
+            let out = lib.file(&meta.id, &file);
+            let job = crate::export::Job {
+                src: &video,
+                cut: Some((start, end - start)),
+                quality: if quality == crate::export::Quality::Original { crate::export::Quality::Share } else { quality },
+                vertical: true,
+                badge: crate::montage::vertical_badge(meta.kills, meta.victory),
+                mobile: (settings.best_play == "mobile").then(|| settings.mobile_layout.clone()),
+                fx: crate::export::Fx { tracks: Some(tracks.clone()), ..Default::default() },
+            };
+            match crate::export::render(ffmpeg, &job, &rec, &out, &|p| step("Preparando la mejor jugada", Some(p))) {
+                Ok(()) => {
+                    let thumb = format!("clips/{BEST_ID}.jpg");
+                    let thumb_ok = library::thumbnail(ffmpeg, &out, ((end - start) - settings.clip_after_s).max(0.0), &lib.file(&meta.id, &thumb)).is_ok();
+                    meta.clips.push(Clip { id: BEST_ID.into(), file, thumb: thumb_ok.then_some(thumb), start, end, title: format!("Mejor jugada · {title}"), kind: "vertical".into(), created_at: Utc::now(), best: true, ..Default::default() });
+                }
+                Err(e) => log::warn!("{}: no se pudo preparar la mejor jugada: {e:#}", meta.id),
+            }
         }
     }
     for c in previous.iter().filter(|c| c.drive.is_some() && !meta.clips.iter().any(|n| n.id == c.id && n.drive == c.drive)) {

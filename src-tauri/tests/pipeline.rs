@@ -14,7 +14,7 @@ fn record_and_analyze() {
     let _ = std::fs::remove_dir_all(lib.dir(&id));
     let ffmpeg = std::path::PathBuf::from("ffmpeg");
 
-    let cfg = SessionConfig { ffmpeg: ffmpeg.clone(), video: video_options(&settings, 0), system_audio: true, microphone: false, mic_volume: 1.0 };
+    let cfg = SessionConfig { ffmpeg: ffmpeg.clone(), video: video_options(&settings, 0), system_audio: true, microphone: false, mic_volume: 1.0, game_pid: None };
     let s = Session::start(lib.dir(&id), cfg).unwrap();
     std::thread::sleep(std::time::Duration::from_secs(15));
     let raw = s.stop().unwrap();

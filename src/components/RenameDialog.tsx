@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { errText } from "../api";
+import { t } from "../i18n";
 import { Icon } from "./Icon";
 
 export function RenameDialog({
@@ -54,7 +55,7 @@ export function RenameDialog({
       >
         <header>
           <h2 id={id}>{heading}</h2>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="Cerrar">
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t("Cerrar")}>
             <Icon name="x" />
           </button>
         </header>
@@ -70,10 +71,10 @@ export function RenameDialog({
         {error && <p className="error-text">{error}</p>}
         <div className="modal-actions">
           <button type="button" className="btn ghost sm" onClick={onClose}>
-            Cancelar
+            {t("Cancelar")}
           </button>
           <button type="submit" className="btn primary sm" disabled={busy}>
-            {busy ? "Guardando…" : "Guardar"}
+            {busy ? t("Guardando…") : t("Guardar")}
           </button>
         </div>
       </form>

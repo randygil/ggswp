@@ -1,4 +1,5 @@
 import type { Step } from "../api";
+import { tr } from "../i18n";
 
 /** Paso en curso del procesamiento: texto + barra si el paso se puede medir. */
 export function StepProgress({ step, fallback }: { step?: Step | null; fallback: string }) {
@@ -7,7 +8,7 @@ export function StepProgress({ step, fallback }: { step?: Step | null; fallback:
     <span className="step" role="status" aria-live="polite">
       <span className="step-text">
         <span className="spinner" aria-hidden />
-        {step?.label ?? fallback}
+        {step?.label != null ? tr(step.label) : fallback}
         {pct !== null && <b>{Math.round(pct)} %</b>}
       </span>
       {pct !== null && (

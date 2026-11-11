@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, fileUrl, fmtClock, fmtDate, fmtTime, pad2, prettyHotkey, type Clip, type Match, type Settings, type Status } from "../api";
 import { Icon } from "../components/Icon";
+import { t, tr } from "../i18n";
 
 type Toast = { id: number; text: string; kind: string };
 
@@ -25,7 +26,7 @@ export function Overlay() {
     const subs = [
       listen<{ text: string; kind: string }>("overlay-toast", (e) => {
         const id = Date.now() + Math.random();
-        setToasts((t) => [...t.slice(-2), { id, ...e.payload }]);
+        setToasts((list) => [...list.slice(-2), { id, ...e.payload, text: tr(e.payload.text) }]);
         setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3200);
       }),
       listen<boolean>("overlay-menu", (e) => {
@@ -109,22 +110,22 @@ function HighlightsMenu({ status, settings, matches }: { status: Status | null; 
 
   return (
     <div className="ov-back" onClick={() => api.overlayClose()}>
-      <div className="ov-dock" role="dialog" aria-modal="true" aria-label="Menú de highlights" onClick={(e) => e.stopPropagation()}>
+      <div className="ov-dock" role="dialog" aria-modal="true" aria-label={t("Menú de highlights")} onClick={(e) => e.stopPropagation()}>
         <header className="ov-head">
           <span className="ov-state">
             <span className={`dot ${rec ? "rec" : status?.buffer_active ? "on" : ""}`} />
-            {rec ? "GRABANDO" : status?.buffer_active ? "BÚFER ACTIVO" : "SIN GRABACIÓN"}
+            {rec ? t("GRABANDO") : status?.buffer_active ? t("BÚFER ACTIVO") : t("SIN GRABACIÓN")}
           </span>
           {rec && <span className="ov-clock">{fmtClock(elapsed)}</span>}
           <span className="ov-meta">
             {rec
-              ? `${rec.manual ? "Grabación manual" : "Partida"} · ${pad2(kills)} momentos · ${pad2(marks)} marcas`
+              ? t(rec.manual ? "Grabación manual · {kills} momentos · {marks} marcas" : "Partida · {kills} momentos · {marks} marcas", { kills: pad2(kills), marks: pad2(marks) })
               : status?.buffer_active
-                ? `Los últimos ${settings.clip_seconds} s están listos para guardar`
-                : "Abre Fortnite para activar el búfer"}
+                ? t("Los últimos {n} s están listos para guardar", { n: settings.clip_seconds })
+                : t("Abre Fortnite para activar el búfer")}
           </span>
           <button className="ov-close" onClick={() => api.overlayClose()}>
-            <kbd>Esc</kbd> cerrar
+            <kbd>Esc</kbd> {t("cerrar")}
           </button>
         </header>
 
@@ -137,14 +138,14 @@ function HighlightsMenu({ status, settings, matches }: { status: Status | null; 
                   key={i}
                   className={`sig-tick ${x.kind === "highlight" ? "kill" : x.kind === "bookmark" ? "bookmark" : "kill"}`}
                   style={{ left: `${Math.min(100, (x.t / span) * 100)}%`, background: x.kind === "clip" ? "var(--text)" : undefined }}
-                  title={`${x.label} · ${fmtClock(x.t)}`}
+                  title={`${tr(x.label)} · ${fmtClock(x.t)}`}
                 />
               ))}
             </div>
             <span className="ov-now" />
             <div className="ov-line-labels">
               <span>00:00</span>
-              <span>AHORA</span>
+              <span>{t("AHORA")}</span>
             </div>
           </div>
         )}
@@ -155,34 +156,34 @@ function HighlightsMenu({ status, settings, matches }: { status: Status | null; 
               <Icon name="download" size={22} />
               {hk.save_clip && <kbd>{key(hk.save_clip)}</kbd>}
             </span>
-            <b>Guardar {settings.clip_seconds} s</b>
-            <small>Lo último que pasó, al instante</small>
+            <b>{t("Guardar {n} s", { n: settings.clip_seconds })}</b>
+            <small>{t("Lo último que pasó, al instante")}</small>
           </button>
           <button className="ov-action" onClick={() => api.addBookmark()} disabled={!rec}>
             <span className="ov-action-top">
               <Icon name="flag" size={22} />
               {hk.bookmark && <kbd>{key(hk.bookmark)}</kbd>}
             </span>
-            <b>Marcar momento</b>
-            <small>{rec ? "Queda señalado en la línea de tiempo" : "Disponible mientras grabas"}</small>
+            <b>{t("Marcar momento")}</b>
+            <small>{rec ? t("Queda señalado en la línea de tiempo") : t("Disponible mientras grabas")}</small>
           </button>
           <button className="ov-action" onClick={() => api.toggleRecording()}>
             <span className="ov-action-top">
               <Icon name={rec ? "stop" : "record"} size={22} filled />
               {hk.toggle_recording && <kbd>{key(hk.toggle_recording)}</kbd>}
             </span>
-            <b>{rec ? "Detener" : "Grabar ahora"}</b>
-            <small>{rec ? "La partida se procesa al terminar" : "Sin esperar a que empiece una partida"}</small>
+            <b>{rec ? t("Detener") : t("Grabar ahora")}</b>
+            <small>{rec ? t("La partida se procesa al terminar") : t("Sin esperar a que empiece una partida")}</small>
           </button>
         </section>
 
         <section>
           <div className="ov-recent-head label">
-            <span>Clips recientes</span>
-            <span>Se abren en ggswp</span>
+            <span>{t("Clips recientes")}</span>
+            <span>{t("Se abren en ggswp")}</span>
           </div>
           {recent.length === 0 ? (
-            <p className="muted small">Todavía no hay clips.</p>
+            <p className="muted small">{t("Todavía no hay clips.")}</p>
           ) : (
             <div className="ov-recent">
               {recent.map(({ m, c }) => (
@@ -192,7 +193,7 @@ function HighlightsMenu({ status, settings, matches }: { status: Status | null; 
           )}
         </section>
 
-        <footer className="ov-foot">{key(hk.highlights_menu || "Alt+Shift+KeyG")} abre y cierra este menú</footer>
+        <footer className="ov-foot">{t("{key} abre y cierra este menú", { key: key(hk.highlights_menu || "Alt+Shift+KeyG") })}</footer>
       </div>
     </div>
   );
@@ -200,10 +201,10 @@ function HighlightsMenu({ status, settings, matches }: { status: Status | null; 
 
 function RecentClip({ m, c }: { m: Match; c: Clip }) {
   return (
-    <button className="ov-clip" onClick={() => api.openInMain(m.id, c.id)} title="Abrir en ggswp">
+    <button className="ov-clip" onClick={() => api.openInMain(m.id, c.id)} title={t("Abrir en ggswp")}>
       <div className={`vf ${c.thumb ? "" : "dots"}`}>{c.thumb && <img src={fileUrl(m, c.thumb)} alt="" />}</div>
       <span className="ov-clip-text">
-        <b>{c.title}</b>
+        <b>{tr(c.title)}</b>
         <small>
           {fmtTime(c.end - c.start)} · {fmtDate(c.created_at)}
         </small>

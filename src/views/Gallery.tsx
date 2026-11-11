@@ -28,12 +28,13 @@ import { ShareDialog } from "../components/ShareDialog";
 import { Signature } from "../components/Signature";
 import { StepProgress } from "../components/StepProgress";
 import { useToast } from "../components/Toast";
+import { locale, t, tr } from "../i18n";
 import { fmtNum, hasPlacement } from "../matchStats";
 
 type Filter = "all" | "wins" | "kept";
 type Sort = "recent" | "kills" | "long";
 
-const upper = (s: string) => s.toLocaleUpperCase("es");
+const upper = (s: string) => s.toLocaleUpperCase(locale());
 
 export function Gallery(props: {
   matches: Match[];
@@ -50,6 +51,20 @@ export function Gallery(props: {
   const [sort, setSort] = useState<Sort>("recent");
   const [query, setQuery] = useState("");
   const [share, setShare] = useState<Match | null>(null);
+  const weekly = status?.steps?.weekly;
+  const [startingWeekly, setStartingWeekly] = useState(false);
+  const createWeekly = async () => {
+    setStartingWeekly(true);
+    try {
+      const id = await api.createWeekly();
+      toast.info(t("Resumen semanal listo"));
+      onOpen(id);
+    } catch (e) {
+      toast.error(errText(e));
+    } finally {
+      setStartingWeekly(false);
+    }
+  };
 
   const hero = useMemo(() => matches.find((m) => m.status === "ready" && m.video), [matches]);
   const list = useMemo(() => {
@@ -58,7 +73,7 @@ export function Gallery(props: {
       if (filter === "wins" && !m.victory) return false;
       if (filter === "kept" && !m.keep) return false;
       if (!q) return true;
-      return [m.title, m.mode ?? "", fmtDate(m.created_at), ...m.clips.map((c) => c.title)].some((s) => s.toLocaleLowerCase("es").includes(q));
+      return [tr(m.title), m.mode ?? "", fmtDate(m.created_at), ...m.clips.map((c) => tr(c.title))].some((s) => s.toLocaleLowerCase("es").includes(q));
     });
     if (sort === "kills") out.sort((a, b) => b.kills - a.kills);
     if (sort === "long") out.sort((a, b) => b.duration_s - a.duration_s);
@@ -76,17 +91,17 @@ export function Gallery(props: {
   const rec = status?.recording;
 
   const chips: [Filter, string, number][] = [
-    ["all", "Todas", matches.length],
-    ["wins", "Victorias", matches.filter((m) => m.victory).length],
-    ["kept", "Conservadas", matches.filter((m) => m.keep).length],
+    ["all", t("Todas"), matches.length],
+    ["wins", t("Victorias"), matches.filter((m) => m.victory).length],
+    ["kept", t("Conservadas"), matches.filter((m) => m.keep).length],
   ];
 
   return (
     <div className="page">
       <header className="topbar">
         <div className="crumbs">
-          Biblioteca<i>/</i>
-          {matches.length} {matches.length === 1 ? "partida" : "partidas"}
+          {t("Biblioteca")}<i>/</i>
+          {matches.length === 1 ? t("{n} partida", { n: matches.length }) : t("{n} partidas", { n: matches.length })}
           {matches.length > 0 && (
             <>
               <i>/</i>
@@ -97,16 +112,16 @@ export function Gallery(props: {
         <div className="topbar-actions">
           <label className="search">
             <Icon name="search" size={16} />
-            <span className="sr">Buscar partidas</span>
-            <input type="search" placeholder="Buscar por modo, fecha o clip" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <span className="sr">{t("Buscar partidas")}</span>
+            <input type="search" placeholder={t("Buscar por modo, fecha o clip")} value={query} onChange={(e) => setQuery(e.target.value)} />
           </label>
           <button
             className={`btn ${rec ? "danger" : "primary"}`}
             onClick={() => (rec ? api.stopRecording() : api.startRecording()).catch((e) => toast.error(errText(e)))}
-            title={rec ? "Detener la grabación" : "Grabar ahora sin esperar a una partida"}
+            title={rec ? t("Detener la grabación") : t("Grabar ahora sin esperar a una partida")}
           >
             <span className="rec-dot" />
-            {rec ? "Detener grabación" : "Grabar ahora"}
+            {rec ? t("Detener grabación") : t("Grabar ahora")}
           </button>
         </div>
       </header>
@@ -118,11 +133,13 @@ export function Gallery(props: {
       ) : (
         <div className="empty">
           <Icon name="film" size={36} />
-          <h2>{matches.length ? "Tu próxima partida va aquí" : "Todavía no hay partidas"}</h2>
+          <h2>{matches.length ? t("Tu próxima partida va aquí") : t("Todavía no hay partidas")}</h2>
           <p>
-            {status?.fortnite_running
-              ? "Fortnite está abierto. La grabación arranca sola cuando empiece la partida."
-              : "Abre Fortnite y entra a una partida: ggswp la graba automáticamente."}
+            {status?.game
+              ? t("{game} está abierto: se graba la sesión mientras siga abierto.", { game: status.game })
+              : status?.fortnite_running
+              ? t("Fortnite está abierto. La grabación arranca sola cuando empiece la partida.")
+              : t("Abre Fortnite y entra a una partida: ggswp la graba automáticamente.")}
           </p>
         </div>
       )}
@@ -131,28 +148,44 @@ export function Gallery(props: {
         <section className="section" aria-labelledby="todas">
           <div className="section-head">
             <h2 id="todas" className="section-title">
-              Partidas
+              {t("Partidas")}
             </h2>
-            <div className="chips" role="group" aria-label="Filtrar partidas">
+            <div className="chips" role="group" aria-label={t("Filtrar partidas")}>
               {chips.map(([k, label, n]) => (
                 <button key={k} className={`chip ${filter === k ? "on" : ""}`} aria-pressed={filter === k} onClick={() => setFilter(k)}>
                   {label} <span>{pad2(n)}</span>
                 </button>
               ))}
             </div>
+            <button
+              className="btn ghost sm"
+              disabled={startingWeekly || !!weekly || !!status?.recording}
+              onClick={createWeekly}
+              title={t("Un video con las mejores jugadas de los últimos 7 días")}
+            >
+              {startingWeekly || weekly ? (
+                <>
+                  <span className="spinner" /> {t("Resumen semanal")}{weekly?.pct != null ? ` ${Math.round(weekly.pct)} %` : "…"}
+                </>
+              ) : (
+                <>
+                  <Icon name="film" size={15} /> {t("Resumen semanal")}
+                </>
+              )}
+            </button>
             <label className="sort">
-              Ordenar
+              {t("Ordenar")}
               <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
-                <option value="recent">Más recientes</option>
-                <option value="kills">Más eliminaciones</option>
-                <option value="long">Más largas</option>
+                <option value="recent">{t("Más recientes")}</option>
+                <option value="kills">{t("Más eliminaciones")}</option>
+                <option value="long">{t("Más largas")}</option>
               </select>
             </label>
           </div>
           {list.length === 0 ? (
             <div className="empty">
-              <h2>Nada por aquí</h2>
-              <p>Ninguna partida coincide con este filtro o búsqueda.</p>
+              <h2>{t("Nada por aquí")}</h2>
+              <p>{t("Ninguna partida coincide con este filtro o búsqueda.")}</p>
             </div>
           ) : (
             <div className="grid">
@@ -168,10 +201,10 @@ export function Gallery(props: {
         <section className="section" aria-labelledby="clips-recientes">
           <div className="section-head">
             <h2 id="clips-recientes" className="section-title">
-              Clips recientes
+              {t("Clips recientes")}
             </h2>
             <button className="link" onClick={onAllClips}>
-              Ver los {clipCount}
+              {t("Ver los {n}", { n: clipCount })}
             </button>
           </div>
           <div className="grid">
@@ -189,8 +222,8 @@ export function Gallery(props: {
 
 function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: () => void }) {
   const shot = longestShot(m);
-  const word = m.victory ? "Victoria" : m.died ? "Eliminado" : "Partida";
-  const sub = m.victory ? "Royale" : m.mode ?? m.title;
+  const word = m.victory ? t("Victoria") : m.died ? t("Eliminado") : t("Partida");
+  const sub = m.victory ? "Royale" : m.mode ?? tr(m.title);
   const autoClips = m.clips.filter((c) => c.kind !== "hotkey" && c.kind !== "manual" && c.kind !== "cut").length;
   const menu = useMatchMenu(m, onOpen);
   return (
@@ -198,7 +231,7 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
       {menu.dialogs}
       <div className="hero-eyebrow">
         <span id="ultima">
-          Última partida — {upper(fmtDate(m.created_at))}
+          {t("Última partida — {date}", { date: upper(fmtDate(m.created_at)) })}
           {m.mode && ` — ${upper(m.mode)}`}
         </span>
         <span>
@@ -215,12 +248,12 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
           </div>
           <dl className="stats">
             <div className="stat">
-              <dt>Eliminaciones</dt>
+              <dt>{t("Eliminaciones")}</dt>
               <dd>{pad2(m.kills)}</dd>
             </div>
             {hasPlacement(m) ? (
               <div className="stat">
-                <dt>Puesto</dt>
+                <dt>{t("Puesto")}</dt>
                 <dd className={m.placement === 1 ? "accent" : ""}>
                   #{m.placement}
                   {m.total_players != null && <small> / {m.total_players}</small>}
@@ -228,12 +261,12 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
               </div>
             ) : (
               <div className="stat">
-                <dt>Duración</dt>
+                <dt>{t("Duración")}</dt>
                 <dd>{fmtClock(m.duration_s)}</dd>
               </div>
             )}
             <div className="stat">
-              <dt>Disparo más largo</dt>
+              <dt>{t("Disparo más largo")}</dt>
               <dd>
                 {shot ? (
                   <>
@@ -246,21 +279,21 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
               </dd>
             </div>
             <div className="stat">
-              <dt>{m.chests > 0 ? "Cofres abiertos" : m.knocks > 0 ? "Derribos" : "Clips automáticos"}</dt>
+              <dt>{m.chests > 0 ? t("Cofres abiertos") : m.knocks > 0 ? t("Derribos") : t("Clips automáticos")}</dt>
               <dd>{pad2(m.chests > 0 ? m.chests : m.knocks > 0 ? m.knocks : autoClips)}</dd>
             </div>
           </dl>
           <div className="hero-actions">
             <button className="btn light" onClick={onOpen}>
-              <Icon name="play" size={16} filled /> Ver partida
+              <Icon name="play" size={16} filled /> {t("Ver partida")}
             </button>
             <button className="btn ghost" onClick={onShare}>
-              <Icon name="upload" size={16} /> Compartir
+              <Icon name="upload" size={16} /> {t("Compartir")}
             </button>
           </div>
         </div>
 
-        <button className="hero-frame" onClick={onOpen} aria-label={`Reproducir ${m.title}`}>
+        <button className="hero-frame" onClick={onOpen} aria-label={t("Reproducir {title}", { title: tr(m.title) })}>
           <div className={`vf big ${m.thumb ? "" : "dots"}`}>
             {m.thumb && <img src={fileUrl(m, m.thumb, m.size_bytes)} alt="" />}
             <div className="vf-shade" />
@@ -276,11 +309,11 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
       </div>
 
       {m.events.length > 0 && (
-        <figure className="sig-panel" aria-label={`Línea de tiempo: ${m.kills} eliminaciones`} style={{ margin: 0 }}>
+        <figure className="sig-panel" aria-label={t("Línea de tiempo: {n} eliminaciones", { n: m.kills })} style={{ margin: 0 }}>
           <div className="sig-legend label">
             <span>
               <i style={{ width: 3, height: 12, background: "var(--accent)" }} />
-              Eliminación
+              {t("Eliminación")}
             </span>
             <span>
               <i style={{ width: 12, height: 8, background: "var(--accent-soft)", border: "1px solid var(--accent-edge)" }} />
@@ -288,18 +321,18 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
             </span>
             <span>
               <i style={{ width: 2, height: 12, background: "var(--text)" }} />
-              Marca / autobús
+              {t("Marca / autobús")}
             </span>
             {m.chests > 0 && (
               <span>
                 <i style={{ width: 2, height: 8, background: "var(--text-2)" }} />
-                Cofre
+                {t("Cofre")}
               </span>
             )}
             {m.died && (
               <span>
                 <i style={{ width: 3, height: 12, background: "var(--flare)" }} />
-                Caída
+                {t("Caída")}
               </span>
             )}
             <span style={{ marginLeft: "auto" }}>{fmtClock(m.duration_s)}</span>
@@ -312,24 +345,30 @@ function Hero({ m, onOpen, onShare }: { m: Match; onOpen: () => void; onShare: (
 }
 
 /** Totales de todas las partidas: siguen sumando aunque las partidas venzan. */
-function TotalsStrip({ t }: { t: Totals }) {
+function TotalsStrip({ t: tot }: { t: Totals }) {
   // Con puesto, el número de partidas pasa a la etiqueta para no pasar de seis datos.
-  const placed = t.avg_placement != null && !!t.placed_matches;
+  const placed = tot.avg_placement != null && !!tot.placed_matches;
   const items: [string, string, boolean, string?][] = [
-    [String(t.chests), t.chests === 1 ? "cofre" : "cofres", true],
-    [String(t.kills), t.kills === 1 ? "eliminación" : "eliminaciones", false],
-    [String(t.victories), t.victories === 1 ? "victoria" : "victorias", false],
+    [String(tot.chests), tot.chests === 1 ? t("cofre") : t("cofres"), true],
+    [String(tot.kills), tot.kills === 1 ? t("eliminación") : t("eliminaciones"), false],
+    [String(tot.victories), tot.victories === 1 ? t("victoria") : t("victorias"), false],
   ];
-  if (placed) items.push([`#${Math.round(t.avg_placement!)}`, "puesto prom.", false, `Mejor puesto: #${t.best_placement} · promedio de ${t.placed_matches} partidas con puesto`]);
-  else items.push([String(t.matches), t.matches === 1 ? "partida" : "partidas", false]);
-  if (t.damage_dealt) items.push([fmtNum(t.damage_dealt), "de daño", false]);
-  items.push([fmtPlayed(t.seconds), "jugado", false]);
+  if (placed)
+    items.push([
+      `#${Math.round(tot.avg_placement!)}`,
+      t("puesto prom."),
+      false,
+      t("Mejor puesto: #{best} · promedio de {n} partidas con puesto", { best: tot.best_placement ?? "", n: tot.placed_matches ?? "" }),
+    ]);
+  else items.push([String(tot.matches), tot.matches === 1 ? t("partida") : t("partidas"), false]);
+  if (tot.damage_dealt) items.push([fmtNum(tot.damage_dealt), t("de daño"), false]);
+  items.push([fmtPlayed(tot.seconds), t("jugado"), false]);
   return (
-    <section className="totals" aria-label="Totales de todas tus partidas">
-      <span className="label" title="Siguen sumando aunque las partidas venzan o se borren">
-        Histórico
-        {placed && ` · ${t.matches} ${t.matches === 1 ? "partida" : "partidas"}`}
-        {t.since && ` · desde ${new Date(t.since).toLocaleDateString("es", { day: "numeric", month: "short" })}`}
+    <section className="totals" aria-label={t("Totales de todas tus partidas")}>
+      <span className="label" title={t("Siguen sumando aunque las partidas venzan o se borren")}>
+        {t("Histórico")}
+        {placed && ` · ${tot.matches === 1 ? t("{n} partida", { n: tot.matches }) : t("{n} partidas", { n: tot.matches })}`}
+        {tot.since && ` · ${t("desde {date}", { date: new Date(tot.since).toLocaleDateString(locale(), { day: "numeric", month: "short" }) })}`}
       </span>
       <dl>
         {items.map(([v, label, accent, title]) => (
@@ -355,22 +394,22 @@ function MatchCard({ m, step, retentionDays, onOpen }: { m: Match; step?: Step; 
         {m.thumb && <img src={fileUrl(m, m.thumb, m.size_bytes)} alt="" loading="lazy" />}
         <div className="vf-shade" />
         {m.keep ? (
-          <span className="tag light pos-tl" title="No vence">
-            <Icon name="keep" size={12} filled /> Conservada
+          <span className="tag light pos-tl" title={t("No vence")}>
+            <Icon name="keep" size={12} filled /> {t("Conservada")}
           </span>
         ) : left !== null && left <= 2 ? (
           <span className="tag dead pos-tl">{expiryText(left)}</span>
         ) : null}
         {m.offloaded && (
-          <span className="tag dark pos-br" title="El video está solo en Google Drive">
-            <Icon name="cloud" size={12} /> Solo en Drive
+          <span className="tag dark pos-br" title={t("El video está solo en Google Drive")}>
+            <Icon name="cloud" size={12} /> {t("Solo en Drive")}
           </span>
         )}
         {m.duration_s > 0 && <span className="tag dark pos-tr mono">{fmtClock(m.duration_s)}</span>}
         {m.victory ? (
-          <span className="tag win pos-bl">Victoria</span>
+          <span className="tag win pos-bl">{t("Victoria")}</span>
         ) : died !== null ? (
-          <span className="tag dead pos-bl">Eliminado {fmtClock(died)}</span>
+          <span className="tag dead pos-bl">{t("Eliminado {time}", { time: fmtClock(died) })}</span>
         ) : null}
         <span className="play-dot sm">
           <Icon name="play" size={16} filled />
@@ -379,33 +418,33 @@ function MatchCard({ m, step, retentionDays, onOpen }: { m: Match; step?: Step; 
           <div className="overlay-msg">
             {m.status === "recording" ? (
               <>
-                <span className="dot rec" /> Grabando
+                <span className="dot rec" /> {t("Grabando")}
               </>
             ) : (
-              <StepProgress step={step} fallback="Procesando" />
+              <StepProgress step={step} fallback={t("Procesando")} />
             )}
           </div>
         )}
-        {m.status === "error" && <div className="overlay-msg error">Error al procesar</div>}
+        {m.status === "error" && <div className="overlay-msg error">{t("Error al procesar")}</div>}
       </div>
       <div className="card-row">
         <div className="card-text">
-          <span className="card-title">{m.title}</span>
+          <span className="card-title">{tr(m.title)}</span>
           <span className="card-meta">
             {fmtDate(m.created_at)}
             {m.mode && ` · ${m.mode}`}
-            {left !== null && left > 2 && ` · ${expiryText(left).toLocaleLowerCase("es")}`}
+            {left !== null && left > 2 && ` · ${expiryText(left).toLocaleLowerCase(locale())}`}
           </span>
         </div>
         {hasPlacement(m) && (
-          <div className="card-kills card-place" title={m.total_players ? `Puesto ${m.placement} de ${m.total_players}` : `Puesto ${m.placement}`}>
+          <div className="card-kills card-place" title={m.total_players ? t("Puesto {n} de {total}", { n: m.placement, total: m.total_players }) : t("Puesto {n}", { n: m.placement })}>
             <b className={m.placement === 1 ? "accent" : ""}>#{m.placement}</b>
-            <span>{m.total_players ? `DE ${m.total_players}` : "PUESTO"}</span>
+            <span>{m.total_players ? t("DE {n}", { n: m.total_players }) : t("PUESTO")}</span>
           </div>
         )}
         <div className="card-kills">
           <b>{pad2(m.kills)}</b>
-          <span>ELIM</span>
+          <span>{t("ELIM")}</span>
         </div>
       </div>
       {m.duration_s > 0 && <Signature events={m.events} duration={m.duration_s} />}
@@ -422,20 +461,20 @@ export function ClipCard({ m, c, onOpen }: { m: Match; c: Clip; onOpen: () => vo
       <div className={`vf ${c.thumb ? "" : "dots"}`}>
         {c.thumb && <img src={fileUrl(m, c.thumb)} alt="" loading="lazy" />}
         <div className="vf-shade" />
-        <span className={`tag pos-tl ${tag === "Auto" ? "win" : "light"}`}>{tag}</span>
+        <span className={`tag pos-tl ${tag === t("Auto") ? "win" : "light"}`}>{tag}</span>
         <span className="tag dark pos-br mono">{fmtTime(c.end - c.start)}</span>
         {c.drive && (
-          <span className="tag dark pos-tr" title={c.offloaded ? "Solo está en Google Drive" : "También está en Google Drive"}>
-            {c.offloaded ? "Solo en Drive" : "Drive"}
+          <span className="tag dark pos-tr" title={c.offloaded ? t("Solo está en Google Drive") : t("También está en Google Drive")}>
+            {c.offloaded ? t("Solo en Drive") : "Drive"}
           </span>
         )}
         <span className="play-dot sm">
           <Icon name="play" size={16} filled />
         </span>
       </div>
-      <span className="card-big">{c.title}</span>
+      <span className="card-big">{tr(c.title)}</span>
       <span className="card-meta">
-        {m.title}
+        {tr(m.title)}
         {onTimeline(c) && ` · ${fmtClock(c.start)}`}
         {m.clip_sizes?.[c.id] != null && ` · ${fmtSize(m.clip_sizes[c.id])}`}
       </span>
