@@ -934,9 +934,18 @@ function Player(props: {
             </div>
             <div className="lane lane-clips">
               {lanesClips.map((c) => (
-                <span key={c.id} className="cl" style={{ left: pct(c.start), width: pct(c.end - c.start) }} title={c.title}>
+                <button
+                  key={c.id}
+                  type="button"
+                  className="cl"
+                  style={{ left: pct(c.start), width: pct(c.end - c.start) }}
+                  title={`${c.title} · ${fmtClock(c.start)} – ${fmtClock(c.end)}\nClic: ir a este momento y marcarlo para crear un clip`}
+                  // Sin esto, la pista toma el clic como un salto y empieza a arrastrar el cursor.
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => selectRange(c.start, c.end)}
+                >
                   {c.title}
-                </span>
+                </button>
               ))}
             </div>
             <div className="lane lane-track">

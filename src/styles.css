@@ -350,7 +350,8 @@ a:hover .play-dot, button:hover > .vf .play-dot, .hero-frame:hover .play-dot { t
 .lane-events .ev.knock { height: 18px; top: 18px; opacity: 0.6; }
 .lane-events .ev.bus, .lane-events .ev.bookmark { width: 2px; margin-left: -1px; height: 22px; top: 14px; }
 .lane-events .ev.victory { width: 8px; margin-left: -8px; }
-.lane-clips .cl { position: absolute; top: 2px; bottom: 2px; background: var(--accent-soft); border: 1px solid var(--accent-edge); border-radius: 2px; overflow: hidden; font-family: var(--mono); font-size: 10px; line-height: 20px; padding: 0 6px; white-space: nowrap; color: var(--text-2); }
+.lane-clips .cl { position: absolute; top: 2px; bottom: 2px; background: var(--accent-soft); border: 1px solid var(--accent-edge); border-radius: 2px; overflow: hidden; font-family: var(--mono); font-size: 10px; line-height: 20px; padding: 0 6px; white-space: nowrap; color: var(--text-2); text-align: left; cursor: pointer; }
+.lane-clips .cl:hover, .lane-clips .cl:focus-visible { background: var(--accent-edge); border-color: var(--accent); color: var(--text); z-index: 1; }
 .lane-track { background: var(--ink-4); border-radius: 2px; overflow: hidden; }
 .lane-track .played { height: 100%; background: rgb(242 244 241 / 0.28); }
 .tl-dim { position: absolute; top: 28px; bottom: 0; background: rgb(7 8 10 / 0.6); pointer-events: none; }
