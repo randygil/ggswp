@@ -7,18 +7,20 @@ export const DEFAULT_MOBILE_LAYOUT: MobileLayout = {
   weapons: { x: 0.685, y: 0.855, w: 0.302, h: 0.092 },
   focus: 0.5,
   two_rows: false,
+  strip: 0.93,
 };
 
 const OUT_W = 1080;
 const OUT_H = 1920;
 const MARGIN = 24;
 const GAP = 16;
-const STRIP_Y = 150;
+const EDGE = 40;
 const BAND_PAD = 14;
 const MAX_ROW_H = 220;
 const TWO_ROWS_W = 760;
 
 type Box = { x: number; y: number; w: number; h: number };
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
 
 /**
  * Dónde va cada pieza en el cuadro de 1080x1920. Es la misma cuenta que `mobile_geometry`
@@ -30,24 +32,29 @@ export function mobileGeometry(l: MobileLayout, w: number, h: number) {
   const crop = (r: Region): Box => ({ x: r.x * w, y: r.y * h, w: r.w * w, h: r.h * h });
   const [hc, wc] = [crop(l.health), crop(l.weapons)];
   const [ah, aw] = [hc.w / hc.h, wc.w / wc.h];
-  let health: Box, weapons: Box, bandH: number;
+  // Tamaños y posición horizontal de cada pieza; `dy` es el desplazamiento dentro de la franja.
+  let hs: { w: number; h: number }, ws: { w: number; h: number }, hx: number, wx: number, wdy: number, bandH: number;
   if (l.two_rows) {
     const row = (a: number) => {
       const rh = Math.min(TWO_ROWS_W / a, MAX_ROW_H);
       return { w: rh * a, h: rh };
     };
-    const [hs, ws] = [row(ah), row(aw)];
-    health = { ...hs, x: (OUT_W - hs.w) / 2, y: STRIP_Y };
-    weapons = { ...ws, x: (OUT_W - ws.w) / 2, y: STRIP_Y + hs.h + GAP };
+    [hs, ws] = [row(ah), row(aw)];
+    [hx, wx] = [(OUT_W - hs.w) / 2, (OUT_W - ws.w) / 2];
+    wdy = hs.h + GAP;
     bandH = hs.h + GAP + ws.h;
   } else {
     const rh = Math.min((OUT_W - 2 * MARGIN - GAP) / (ah + aw), MAX_ROW_H);
-    const x0 = Math.max(0, (OUT_W - (rh * ah + GAP + rh * aw)) / 2);
-    health = { x: x0, y: STRIP_Y, w: rh * ah, h: rh };
-    weapons = { x: x0 + rh * ah + GAP, y: STRIP_Y, w: rh * aw, h: rh };
+    [hs, ws] = [{ w: rh * ah, h: rh }, { w: rh * aw, h: rh }];
+    hx = Math.max(0, (OUT_W - (hs.w + GAP + ws.w)) / 2);
+    wx = hx + hs.w + GAP;
+    wdy = 0;
     bandH = rh;
   }
-  return { game: { x: gx, y: 0, w: gw, h }, band: { y: STRIP_Y - BAND_PAD, h: bandH + 2 * BAND_PAD }, health: { crop: hc, to: health }, weapons: { crop: wc, to: weapons } };
+  const y = EDGE + clamp(l.strip, 0, 1) * (OUT_H - 2 * EDGE - bandH);
+  const health: Box = { ...hs, x: hx, y };
+  const weapons: Box = { ...ws, x: wx, y: y + wdy };
+  return { game: { x: gx, y: 0, w: gw, h }, travel: OUT_H - 2 * EDGE - bandH, band: { y: y - BAND_PAD, h: bandH + 2 * BAND_PAD }, health: { crop: hc, to: health }, weapons: { crop: wc, to: weapons } };
 }
 
 /** Rectángulo que ocupa la imagen dentro del elemento <video> (que puede tener bandas). */
@@ -74,7 +81,6 @@ function useContentBox(video: RefObject<HTMLVideoElement | null>) {
   return box;
 }
 
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
 const pct = (v: number) => `${v * 100}%`;
 
 /**
@@ -85,8 +91,12 @@ export function MobileOverlay(props: { video: RefObject<HTMLVideoElement | null>
   const { video, layout, onChange, onCommit } = props;
   const box = useContentBox(video);
   const drag = useRef<{ what: "health" | "weapons" | "focus"; resize: boolean; x: number; y: number; start: MobileLayout } | null>(null);
+  // Último valor emitido: al soltar se guarda este, aunque React aún no haya vuelto a dibujar.
   const latest = useRef(layout);
-  latest.current = layout;
+  const emit = (l: MobileLayout) => {
+    latest.current = l;
+    onChange(l);
+  };
   if (!box) return null;
 
   const begin = (e: React.PointerEvent, what: "health" | "weapons" | "focus", resize = false) => {
@@ -95,6 +105,7 @@ export function MobileOverlay(props: { video: RefObject<HTMLVideoElement | null>
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     drag.current = { what, resize, x: e.clientX, y: e.clientY, start: layout };
+    latest.current = layout;
   };
   const move = (e: React.PointerEvent) => {
     const d = drag.current;
@@ -102,14 +113,14 @@ export function MobileOverlay(props: { video: RefObject<HTMLVideoElement | null>
     const [dx, dy] = [(e.clientX - d.x) / box.w, (e.clientY - d.y) / box.h];
     if (d.what === "focus") {
       const half = ((video.current!.videoHeight * 9) / 16 / video.current!.videoWidth) / 2;
-      onChange({ ...d.start, focus: clamp(d.start.focus + dx, half, 1 - half) });
+      emit({ ...d.start, focus: clamp(d.start.focus + dx, half, 1 - half) });
       return;
     }
     const r = d.start[d.what];
     const next: Region = d.resize
       ? { ...r, w: clamp(r.w + dx, 0.04, 1 - r.x), h: clamp(r.h + dy, 0.03, 1 - r.y) }
       : { ...r, x: clamp(r.x + dx, 0, 1 - r.w), y: clamp(r.y + dy, 0, 1 - r.h) };
-    onChange({ ...d.start, [d.what]: next });
+    emit({ ...d.start, [d.what]: next });
   };
   const end = () => {
     if (drag.current) onCommit(latest.current);
@@ -161,9 +172,14 @@ export function MobileOverlay(props: { video: RefObject<HTMLVideoElement | null>
   );
 }
 
-/** Vista previa en vivo del cuadro vertical, dibujada con los mismos recortes que el render. */
-export function MobilePreview({ video, layout }: { video: RefObject<HTMLVideoElement | null>; layout: MobileLayout }) {
+/**
+ * Vista previa en vivo del cuadro vertical, dibujada con los mismos recortes que el render.
+ * Arrastrando hacia arriba o abajo se mueve la franja del HUD.
+ */
+export function MobilePreview(props: { video: RefObject<HTMLVideoElement | null>; layout: MobileLayout; onChange: (l: MobileLayout) => void; onCommit: (l: MobileLayout) => void }) {
+  const { video, layout, onChange, onCommit } = props;
   const canvas = useRef<HTMLCanvasElement>(null);
+  const drag = useRef<{ y: number; start: MobileLayout; last: MobileLayout } | null>(null);
   const latest = useRef(layout);
   latest.current = layout;
   const [height, setHeight] = useState(0);
@@ -205,6 +221,25 @@ export function MobilePreview({ video, layout }: { video: RefObject<HTMLVideoEle
       style={{ height, width: (height * 9) / 16 }}
       role="img"
       aria-label="Vista previa del clip en modo móvil"
+      title="Arrastra hacia arriba o abajo para mover la franja de la salud y las armas"
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { y: e.clientY, start: layout, last: layout };
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        const v = video.current;
+        if (!d || !v?.videoWidth || !height) return;
+        // Píxeles de pantalla → píxeles del cuadro → fracción del recorrido de la franja.
+        const travel = mobileGeometry(d.start, v.videoWidth, v.videoHeight).travel;
+        d.last = { ...d.start, strip: clamp(d.start.strip + (((e.clientY - d.y) / height) * OUT_H) / travel, 0, 1) };
+        onChange(d.last);
+      }}
+      onPointerUp={() => {
+        if (drag.current) onCommit(drag.current.last);
+        drag.current = null;
+      }}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
     />

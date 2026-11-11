@@ -25,7 +25,7 @@ Una vez instalada, la app avisa sola cuando hay una versión nueva.
   los 15 (las partidas conservadas no vencen). Todo es configurable.
 - **Clips livianos**: se guardan en H.264 a 1080p (cerca de 1 MB por segundo) en vez de a la
   calidad de grabación, listos para WhatsApp e Instagram. El editor exporta en horizontal,
-  vertical 9:16 o **modo móvil** (9:16 con la salud y las armas en una franja arriba; las zonas
+  vertical 9:16 o **modo móvil** (9:16 con la salud y las armas en una franja que se mueve a la altura que quieras; las zonas
   se ajustan arrastrando sobre el video, con vista previa en vivo) y en tres calidades.
 - **Compartir**: copiar el video al portapapeles, panel "Compartir" de Windows, guardar como,
   al teléfono por Wi-Fi o Drive con un QR. Menú de highlights sobre el juego y menús de clic derecho.

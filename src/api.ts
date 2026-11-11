@@ -65,6 +65,8 @@ export interface MobileLayout {
   focus: number;
   /** La salud arriba y las armas abajo, más grandes, en vez de lado a lado. */
   two_rows: boolean;
+  /** Altura de la franja del HUD en el cuadro: 0 = arriba del todo, 1 = abajo del todo. */
+  strip: number;
 }
 
 export type Firewall = "allowed" | "blocked" | "unknown";

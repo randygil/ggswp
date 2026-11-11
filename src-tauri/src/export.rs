@@ -137,12 +137,14 @@ pub struct MobileLayout {
     pub focus: f64,
     /// La salud arriba y las armas abajo, más grandes, en vez de lado a lado.
     pub two_rows: bool,
+    /// Altura de la franja del HUD en el cuadro: 0 = arriba del todo, 1 = abajo del todo.
+    pub strip: f64,
 }
 
 impl Default for MobileLayout {
     fn default() -> Self {
         // HUD de Fortnite a escala 100 % en 16:9.
-        Self { health: Region { x: 0.015, y: 0.872, w: 0.29, h: 0.085 }, weapons: Region { x: 0.685, y: 0.855, w: 0.302, h: 0.092 }, focus: 0.5, two_rows: false }
+        Self { health: Region { x: 0.015, y: 0.872, w: 0.29, h: 0.085 }, weapons: Region { x: 0.685, y: 0.855, w: 0.302, h: 0.092 }, focus: 0.5, two_rows: false, strip: 0.93 }
     }
 }
 
@@ -168,8 +170,9 @@ pub struct MobileGeometry {
 const MOBILE_W: f64 = 1080.0;
 const MOBILE_MARGIN: f64 = 24.0;
 const MOBILE_GAP: f64 = 16.0;
-/// Deja libre la parte de arriba, que las apps tapan con su interfaz.
-const MOBILE_STRIP_Y: f64 = 150.0;
+/// Lo más cerca que llega la franja al borde de arriba o de abajo.
+const MOBILE_EDGE: f64 = 40.0;
+const MOBILE_H: f64 = 1920.0;
 const MOBILE_BAND_PAD: f64 = 14.0;
 const MOBILE_MAX_ROW_H: f64 = 220.0;
 const MOBILE_TWO_ROWS_W: f64 = 760.0;
@@ -194,34 +197,27 @@ pub fn mobile_geometry(l: &MobileLayout, w: u32, h: u32) -> MobileGeometry {
     let (hc, wc) = (crop(&l.health), crop(&l.weapons));
     let aspect = |c: (u32, u32, u32, u32)| c.0 as f64 / c.1 as f64;
     let (ah, aw) = (aspect(hc), aspect(wc));
-    let (health, weapons, band_h) = if l.two_rows {
+    // Tamaños y posición horizontal de cada pieza; `dy` es el desplazamiento dentro de la franja.
+    let (hs, hx, ws, wx, wdy, band_h) = if l.two_rows {
         let row = |a: f64| {
             let rh = (MOBILE_TWO_ROWS_W / a).min(MOBILE_MAX_ROW_H);
             (even(rh * a), even(rh))
         };
         let (hs, ws) = (row(ah), row(aw));
-        let center = |s: (u32, u32)| ((MOBILE_W - s.0 as f64) / 2.0).round() as u32;
-        let wy = MOBILE_STRIP_Y + hs.1 as f64 + MOBILE_GAP;
-        (
-            Placed { crop: hc, size: hs, pos: (center(hs), MOBILE_STRIP_Y as u32) },
-            Placed { crop: wc, size: ws, pos: (center(ws), wy as u32) },
-            hs.1 as f64 + MOBILE_GAP + ws.1 as f64,
-        )
+        let center = |s: (u32, u32)| ((MOBILE_W - s.0 as f64) / 2.0).round();
+        (hs, center(hs), ws, center(ws), hs.1 as f64 + MOBILE_GAP, hs.1 as f64 + MOBILE_GAP + ws.1 as f64)
     } else {
         let rh = ((MOBILE_W - 2.0 * MOBILE_MARGIN - MOBILE_GAP) / (ah + aw)).min(MOBILE_MAX_ROW_H);
         let (hs, ws) = ((even(rh * ah), even(rh)), (even(rh * aw), even(rh)));
         let x0 = ((MOBILE_W - (hs.0 as f64 + MOBILE_GAP + ws.0 as f64)) / 2.0).max(0.0).round();
-        (
-            Placed { crop: hc, size: hs, pos: (x0 as u32, MOBILE_STRIP_Y as u32) },
-            Placed { crop: wc, size: ws, pos: ((x0 + hs.0 as f64 + MOBILE_GAP) as u32, MOBILE_STRIP_Y as u32) },
-            hs.1 as f64,
-        )
+        (hs, x0, ws, x0 + hs.0 as f64 + MOBILE_GAP, 0.0, hs.1 as f64)
     };
+    let y = (MOBILE_EDGE + l.strip.clamp(0.0, 1.0) * (MOBILE_H - 2.0 * MOBILE_EDGE - band_h)).round();
     MobileGeometry {
         game: (gw, h, gx.round() as u32, 0),
-        band: ((MOBILE_STRIP_Y - MOBILE_BAND_PAD) as u32, (band_h + 2.0 * MOBILE_BAND_PAD) as u32),
-        health,
-        weapons,
+        band: ((y - MOBILE_BAND_PAD) as u32, (band_h + 2.0 * MOBILE_BAND_PAD) as u32),
+        health: Placed { crop: hc, size: hs, pos: (hx as u32, y as u32) },
+        weapons: Placed { crop: wc, size: ws, pos: (wx as u32, (y + wdy) as u32) },
     }
 }
 
@@ -518,14 +514,15 @@ mod tests {
 
     #[test]
     fn mobile_layout_puts_the_hud_in_one_strip() {
-        let g = mobile_geometry(&MobileLayout::default(), 2560, 1440);
+        let top = MobileLayout { strip: 0.0, ..Default::default() };
+        let g = mobile_geometry(&top, 2560, 1440);
         assert_eq!(g.game, (810, 1440, 875, 0));
         // Misma altura, lado a lado, centradas y dentro del cuadro.
         assert_eq!(g.health.size.1, g.weapons.size.1);
-        assert_eq!(g.health.pos.1, 150);
+        assert_eq!(g.health.pos.1, 40);
         assert_eq!(g.weapons.pos.0, g.health.pos.0 + g.health.size.0 + 16);
         assert!(g.weapons.pos.0 + g.weapons.size.0 <= 1080 - g.health.pos.0 + 2);
-        assert_eq!(g.band, (136, g.health.size.1 + 28));
+        assert_eq!(g.band, (26, g.health.size.1 + 28));
         // Los recortes no se salen de la grabación.
         for p in [g.health, g.weapons] {
             assert!(p.crop.2 + p.crop.0 <= 2560 && p.crop.3 + p.crop.1 <= 1440, "{p:?}");
@@ -536,16 +533,33 @@ mod tests {
 
     #[test]
     fn mobile_layout_in_two_rows_is_bigger_and_stacked() {
-        let one = mobile_geometry(&MobileLayout::default(), 2560, 1440);
-        let two = mobile_geometry(&MobileLayout { two_rows: true, ..Default::default() }, 2560, 1440);
+        let top = MobileLayout { strip: 0.0, ..Default::default() };
+        let one = mobile_geometry(&top, 2560, 1440);
+        let two = mobile_geometry(&MobileLayout { two_rows: true, ..top }, 2560, 1440);
         assert!(two.health.size.1 > one.health.size.1);
-        assert_eq!(two.weapons.pos.1, 150 + two.health.size.1 + 16);
+        assert_eq!(two.weapons.pos.1, 40 + two.health.size.1 + 16);
         assert_eq!(two.band.1, two.health.size.1 + 16 + two.weapons.size.1 + 28);
         // El encuadre del juego se mueve y no se sale.
         let left = mobile_geometry(&MobileLayout { focus: 0.0, ..Default::default() }, 2560, 1440);
         assert_eq!(left.game.2, 0);
         let right = mobile_geometry(&MobileLayout { focus: 1.0, ..Default::default() }, 2560, 1440);
         assert_eq!(right.game.2, 2560 - 810);
+    }
+
+    #[test]
+    fn mobile_strip_moves_between_the_top_and_the_bottom() {
+        for two_rows in [false, true] {
+            let at = |strip: f64| mobile_geometry(&MobileLayout { two_rows, strip, ..Default::default() }, 2560, 1440);
+            // Abajo del todo termina a 40 px del borde; por defecto queda cerca de abajo.
+            let low = at(1.0);
+            assert_eq!(low.weapons.pos.1 + low.weapons.size.1, 1920 - 40, "{low:?}");
+            assert_eq!(low.band.0 + low.band.1, 1920 - 40 + 14);
+            let def = mobile_geometry(&MobileLayout { two_rows, ..Default::default() }, 2560, 1440);
+            assert!(def.health.pos.1 > 1400 && def.health.pos.1 < low.health.pos.1, "{def:?}");
+            // Fuera de rango no se sale del cuadro.
+            assert_eq!(at(7.0), low);
+            assert_eq!(at(-1.0), at(0.0));
+        }
     }
 
     #[test]

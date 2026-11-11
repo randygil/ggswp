@@ -242,14 +242,55 @@ export function MatchView(props: {
           >
             <Icon name="film" size={16} /> {hasReel ? "Rehacer resumen" : "Crear resumen"}
           </button>
-          <button className="btn light" onClick={() => setShare(source.kind === "clip" ? { clip: source.clip } : {})}>
-            <Icon name="upload" size={16} /> Compartir
+          <button className="btn light" onClick={() => setShare({})} title="Compartir el video de la partida completa">
+            <Icon name="upload" size={16} /> Compartir partida
           </button>
         </div>
       </header>
 
       <div className="match-layout">
         <section className="player-col">
+          {activeClip && (
+            <div className="clip-bar">
+              <button className="btn ghost sm" onClick={() => setSource({ kind: "match" })} title="Volver al video de la partida completa">
+                <Icon name="arrowLeft" size={15} /> Partida completa
+              </button>
+              <span className="clip-bar-title">
+                <span className="label">Viendo el clip</span>
+                <b>{activeClip.title}</b>
+                <small>
+                  {fmtClock(activeClip.end - activeClip.start)}
+                  {activeClip.kind === "vertical" && " · 9:16"}
+                  {m.clip_sizes?.[activeClip.id] != null && ` · ${fmtSize(m.clip_sizes[activeClip.id])}`}
+                </small>
+              </span>
+              <div className="clip-bar-actions">
+                <button className="btn primary sm" onClick={() => setShare({ clip: activeClip })}>
+                  <Icon name="upload" size={15} /> Compartir clip
+                </button>
+                <button
+                  className="icon-btn sm"
+                  title="Mostrar el clip en la carpeta"
+                  aria-label="Mostrar el clip en la carpeta"
+                  disabled={!!activeClip.offloaded}
+                  onClick={() => run("", () => api.reveal(m.id, activeClip.id))}
+                >
+                  <Icon name="folder" size={16} />
+                </button>
+                <button
+                  className="icon-btn sm danger"
+                  title="Borrar este clip"
+                  aria-label="Borrar este clip"
+                  onClick={() =>
+                    confirm(activeClip.drive ? `¿Borrar el clip "${activeClip.title}"? También se manda a la papelera de Drive.` : `¿Borrar el clip "${activeClip.title}"?`) &&
+                    run("Clip borrado", () => api.deleteClip(m.id, activeClip.id))
+                  }
+                >
+                  <Icon name="trash" size={16} />
+                </button>
+              </div>
+            </div>
+          )}
           {src ? (
             <Player
               key={src}
@@ -261,9 +302,7 @@ export function MatchView(props: {
               onExport={async (o) => {
                 const c = await api.exportClip(m.id, { ...o, source: activeClip?.id });
                 toast.info(`Clip "${c.title}" guardado`);
-                // Desde la partida se sigue cortando; un recorte de un clip se abre para verlo.
-                if (activeClip) showClip(c);
-                else setTab("clips");
+                showClip(c);
               }}
             />
           ) : onlyDrive ? (
@@ -306,16 +345,6 @@ export function MatchView(props: {
           {src && step && (
             <div className="source-bar">
               <StepProgress step={step} fallback="Analizando…" />
-            </div>
-          )}
-          {source.kind === "clip" && (
-            <div className="source-bar">
-              <span>
-                Reproduciendo el clip <b>{source.clip.title}</b>
-              </span>
-              <button className="btn ghost sm" onClick={() => setSource({ kind: "match" })}>
-                Ver partida completa
-              </button>
             </div>
           )}
           {matchUpload && (
@@ -528,7 +557,7 @@ function Player(props: {
   // Zonas del modo móvil: se guardan en los ajustes al soltar cada cambio.
   const [layout, setLayout] = useState<MobileLayout>(DEFAULT_MOBILE_LAYOUT);
   useEffect(() => {
-    api.settings().then((s) => s.mobile_layout && setLayout(s.mobile_layout)).catch(() => {});
+    api.settings().then((s) => s.mobile_layout && setLayout({ ...DEFAULT_MOBILE_LAYOUT, ...s.mobile_layout })).catch(() => {});
   }, []);
   const commitLayout = (l: MobileLayout) => {
     setLayout(l);
@@ -717,7 +746,7 @@ function Player(props: {
           onPause={() => setPlaying(false)}
         />
         {mobile && <MobileOverlay video={video} layout={layout} onChange={setLayout} onCommit={commitLayout} />}
-        {mobile && <MobilePreview video={video} layout={layout} />}
+        {mobile && <MobilePreview video={video} layout={layout} onChange={setLayout} onCommit={commitLayout} />}
       </div>
 
       <div className="controls">
@@ -794,7 +823,7 @@ function Player(props: {
         {mobile && (
           <p className="muted small mf-help">
             Sobre el video: arrastra <b>Salud</b> y <b>Armas</b> hasta cubrir esas partes de tu HUD (la esquina de cada zona cambia su tamaño) y mueve <b>Encuadre</b> para elegir qué parte del juego
-            se ve. A la derecha, el resultado.
+            se ve. A la derecha, el resultado: arrástralo hacia arriba o abajo para mover la franja.
           </p>
         )}
         {(range || clip) && (
